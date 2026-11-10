@@ -9,6 +9,7 @@ _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 # their .env file.
 _ENV_OVERRIDES = {
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
+    "TRADINGAGENTS_OPENAI_AUTH":          "openai_auth",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
     "TRADINGAGENTS_QUICK_THINK_LLM":      "quick_think_llm",
     "TRADINGAGENTS_DEEP_THINK_PROVIDER":       "deep_think_provider",
@@ -90,6 +91,8 @@ def build_default_config() -> dict:
         "memory_log_max_entries": None,
         # LLM settings
         "llm_provider": "openai",
+        # Keep API-key billing as the default; the local ChatGPT plan path is opt-in.
+        "openai_auth": "api_key",
         "deep_think_llm": "gpt-6-sol",
         "quick_think_llm": "gpt-6-luna",
         # When None, each provider's client falls back to its own default endpoint

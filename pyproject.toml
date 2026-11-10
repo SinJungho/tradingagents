@@ -41,6 +41,10 @@ dev = [
 bedrock = [
     "langchain-aws>=1.7.9",
 ]
+# Local Sign in with ChatGPT token validation (no API key or client secret).
+chatgpt-plan = [
+    "PyJWT[crypto]>=2.10.1",
+]
 
 [project.scripts]
 tradingagents = "cli.main:app"

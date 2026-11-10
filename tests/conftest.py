@@ -1,5 +1,6 @@
 """Shared pytest fixtures that prevent CI hangs when API keys are absent."""
 
+import ipaddress
 import os
 import socket
 
@@ -58,16 +59,36 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def _no_network(request, monkeypatch):
-    """Tests do not reach the network; one that must is marked integration."""
+    """Block external network; allow local OAuth callback tests."""
     if request.node.get_closest_marker("integration"):
         return
 
     def refuse(*args, **kwargs):
         raise OSError(f"test tried to reach the network: {args[1:] or kwargs}")
 
-    monkeypatch.setattr(socket.socket, "connect", refuse)
-    monkeypatch.setattr(socket.socket, "connect_ex", refuse)
-    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: refuse(None, *a))
+    def is_loopback(address):
+        host = address[0] if isinstance(address, tuple) else address
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except (TypeError, ValueError):
+            return isinstance(host, str) and host.lower() == "localhost"
+
+    connect = socket.socket.connect
+    connect_ex = socket.socket.connect_ex
+    getaddrinfo = socket.getaddrinfo
+
+    def guarded_connect(sock, address):
+        return connect(sock, address) if is_loopback(address) else refuse(sock, address)
+
+    def guarded_connect_ex(sock, address):
+        return connect_ex(sock, address) if is_loopback(address) else refuse(sock, address)
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        return getaddrinfo(host, *args, **kwargs) if is_loopback(host) else refuse(None, host)
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
     # yfinance's HTTP client is libcurl, which never touches Python's sockets.
     from curl_cffi import requests as curl_requests
 
@@ -96,6 +117,7 @@ _API_KEY_ENV_VARS = (
     "ANTHROPIC_API_KEY",
     "XAI_API_KEY",
     "DEEPSEEK_API_KEY",
+    "NVIDIA_API_KEY",
     "DASHSCOPE_API_KEY",
     "DASHSCOPE_CN_API_KEY",
     "ZHIPU_API_KEY",

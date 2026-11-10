@@ -5,6 +5,7 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
+from cli.chatgpt_auth import auth_app
 from cli.display import console
 from cli.models import AnalystType, AssetType
 from cli.prompts import filter_analysts_for_asset_type, parse_analysts
@@ -31,6 +32,7 @@ app = typer.Typer(
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
+app.add_typer(auth_app, name="auth")
 
 
 @app.callback(invoke_without_command=True)

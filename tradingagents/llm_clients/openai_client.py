@@ -343,6 +343,24 @@ class OpenAIClient(BaseLLMClient):
 
     def get_llm(self) -> Any:
         """Return a configured ChatOpenAI instance, driven by the provider registry."""
+        auth_mode = self.kwargs.get("openai_auth", "api_key")
+        if auth_mode not in ("api_key", "chatgpt_plan"):
+            raise ValueError("openai_auth must be 'api_key' or 'chatgpt_plan'.")
+        if auth_mode == "chatgpt_plan":
+            if self.provider != "openai":
+                raise ValueError("ChatGPT plan authentication is available only for provider 'openai'.")
+            if self.base_url and not _is_native_openai_base_url(self.base_url):
+                raise ValueError("ChatGPT plan authentication requires api.openai.com.")
+            from ..chatgpt_plan_auth import get_access_token
+            from .chatgpt_plan import ChatGPTPlanChatModel
+
+            return ChatGPTPlanChatModel(
+                model=self.model,
+                token_provider=get_access_token,
+                timeout=self.kwargs.get("timeout"),
+                callbacks=self.kwargs.get("callbacks"),
+            )
+
         self.warn_if_unknown_model()
         llm_kwargs = {"model": self.model}
         spec = OPENAI_COMPATIBLE_PROVIDERS.get(self.provider)

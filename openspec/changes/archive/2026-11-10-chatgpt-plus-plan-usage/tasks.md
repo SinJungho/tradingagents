@@ -1,0 +1,22 @@
+# Tasks
+
+- [x] 1. 인증 연결
+  - [x] 1.1 로컬 loopback OAuth, PKCE, state/nonce 및 token exchange 구현
+  - [x] 1.2 JWKS 서명, issuer, audience, expiry, nonce와 grant scope 검증
+  - [x] 1.3 토큰을 사용자 설정 경로에 atomic write 및 `0600` 권한으로 보관하고 refresh/revoke 지원
+  - [x] 1.4 `auth connect`, `auth status`, `auth disconnect`, 계정 모델 목록 명령 추가
+- [x] 2. Responses API 호출
+  - [x] 2.1 OpenAI provider에 명시적 ChatGPT 플랜 인증 모드 추가
+  - [x] 2.2 각 요청에서 최신 token을 사용하고 Responses 스트림의 완료 이벤트를 확인
+  - [x] 2.3 `store=false`, `stream=true`, no-retry, 도구 namespace와 지원 매개변수 제한 반영
+  - [x] 2.4 인증 오류나 한도 초과 시 API 키·provider 자동 폴백이 없도록 보장
+  - [x] 2.5 최신 tier client factory 경로에 인증 모드와 미지원 옵션 제한 연결
+- [x] 3. HTTP mock 기반 테스트
+  - [x] 3.1 OAuth state/nonce/PKCE, callback 검증 및 token exchange 테스트
+  - [x] 3.2 권한, 파일 권한, refresh token rotation, disconnect 검증
+  - [x] 3.3 Responses 요청 payload와 text/tool-call 스트림 완료 및 오류 처리 검증
+  - [x] 3.4 기존 OpenAI API key 경로가 유지되는지 검증
+- [x] 4. 문서와 검증
+  - [x] 4.1 설치 선택 항목, 설정, 플랜 한도 및 미지원 API 옵션 문서화
+  - [x] 4.2 포커스 테스트, 전체 pytest, Ruff와 CLI help 실행
+  - [x] 4.3 OpenSpec 변경 검증 후 필수 작업이 완료된 경우에만 아카이브
