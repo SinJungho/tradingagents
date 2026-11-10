@@ -8,6 +8,7 @@ from rich.markup import escape
 from cli.chatgpt_auth import auth_app
 from cli.display import console
 from cli.models import AnalystType, AssetType
+from cli.portfolio import portfolio_app
 from cli.prompts import filter_analysts_for_asset_type, parse_analysts
 from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
@@ -32,6 +33,7 @@ app = typer.Typer(
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
+app.add_typer(portfolio_app, name="portfolio")
 app.add_typer(auth_app, name="auth")
 
 

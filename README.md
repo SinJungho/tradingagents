@@ -136,6 +136,8 @@ Install the package and its dependencies (`uv pip install .` with uv):
 pip install .
 ```
 
+For Toss Securities read-only portfolio summaries and synthetic demos, see [the portfolio analysis guide](docs/portfolio-analysis.md).
+
 ### Docker
 
 Alternatively, run with Docker:
