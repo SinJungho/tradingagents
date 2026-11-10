@@ -41,6 +41,18 @@ class TestExactIdMatches:
         assert caps.supports_tool_choice is False
         assert caps.requires_reasoning_content_roundtrip is True
 
+    def test_nvidia_deepseek_namespace_keeps_deepseek_compatibility(self):
+        caps = get_capabilities("deepseek-ai/deepseek-v4.1-flash")
+        assert caps.supports_tool_choice is False
+        assert caps.preferred_structured_method == "function_calling"
+        assert caps.requires_reasoning_content_roundtrip is True
+
+    def test_nvidia_glm_namespace_keeps_zai_compatibility(self):
+        caps = get_capabilities("z-ai/glm-5.3-flash")
+        assert caps.supports_tool_choice is False
+        assert caps.preferred_structured_method == "function_calling"
+        assert caps.supports_json_schema is True
+
 
 @pytest.mark.unit
 class TestPatternMatches:

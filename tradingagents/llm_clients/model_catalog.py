@@ -25,6 +25,7 @@ _GLM_MODELS: dict[str, list[ModelOption]] = {
     ],
     "deep": [
         ("GLM-5.3 - Latest flagship, 1M ctx", "glm-5.3"),
+        ("GLM-5.3-Flash - Fast, capable model", "glm-5.3-flash"),
         ("GLM-5.2 - 744B, 1M ctx", "glm-5.2"),
         ("GLM-5.1 - 745B, 200K ctx", "glm-5.1"),
         ("GLM-4.7 - Previous-gen flagship", "glm-4.7"),

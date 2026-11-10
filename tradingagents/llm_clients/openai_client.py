@@ -133,6 +133,10 @@ class DeepSeekChatOpenAI(NormalizedChatOpenAI):
         return chat_result
 
 
+class NvidiaChatOpenAI(DeepSeekChatOpenAI):
+    """NVIDIA NIM client that preserves reasoning fields when present."""
+
+
 class MinimaxChatOpenAI(NormalizedChatOpenAI):
     """MiniMax-specific overrides on top of the OpenAI-compatible client.
 
@@ -211,7 +215,7 @@ def _chatgpt_credential() -> Callable[[], str]:
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort", "temperature", "max_tokens",
-    "api_key", "callbacks", "http_client", "http_async_client",
+    "api_key", "callbacks", "http_client", "http_async_client", "extra_body",
 )
 
 # OpenAI's ``reasoning_effort`` is only accepted by reasoning models — GPT-5 and
@@ -274,7 +278,7 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "mistral":    ProviderSpec(base_url="https://api.mistral.ai/v1"),
     "kimi":       ProviderSpec(base_url="https://api.moonshot.ai/v1"),
     "groq":       ProviderSpec(base_url="https://api.groq.com/openai/v1"),
-    "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
+    "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1", chat_class=NvidiaChatOpenAI),
     "ollama":     ProviderSpec(base_url="http://localhost:11434/v1", base_url_env="OLLAMA_BASE_URL",
                                key_optional=True, placeholder_key="ollama",
                                chat_class=LocalCompatibleChatOpenAI),
