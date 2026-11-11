@@ -15,6 +15,7 @@ from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
+from tradingagents.runtime_diagnostics import diagnose_runtime
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
 # the platform at import time), so gate on the platform rather than catching the
@@ -35,6 +36,12 @@ app = typer.Typer(
 )
 app.add_typer(portfolio_app, name="portfolio")
 app.add_typer(auth_app, name="auth")
+
+
+@app.command()
+def doctor() -> None:
+    """Diagnose API settings and host reachability visible to this process."""
+    typer.echo(diagnose_runtime())
 
 
 @app.callback(invoke_without_command=True)

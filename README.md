@@ -187,7 +187,7 @@ To run on your ChatGPT Plus or Pro plan instead of an API key, choose "Subscript
 
 For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-5-5`.
 
-For eligible ChatGPT Plus or Pro accounts, the local open-source CLI can request ChatGPT plan usage through Sign in with ChatGPT instead of an OpenAI API key. Install the optional token-validation dependency, authorize the app in your browser, then opt in:
+For the separate legacy `provider=openai`, `openai_auth=chatgpt_plan` path, the local open-source CLI can request ChatGPT plan usage through Sign in with ChatGPT instead of an OpenAI API key. Install the optional token-validation dependency, authorize the app in your browser, then opt in:
 
 ```bash
 pip install ".[chatgpt-plan]"
@@ -218,6 +218,8 @@ cp .env.example .env
 ```
 
 ### CLI Usage
+
+To check API configuration from the current process, including an Orca worker, run `tradingagents doctor`. It shows environment-variable names and whether they are set, then sends unauthenticated HTTP `HEAD` requests to the selected LLM and data API hosts. It never prints credential values or reads account data. For `provider=chatgpt`, use `tradingagents login chatgpt`; only the legacy `openai_auth=chatgpt_plan` path uses `tradingagents auth connect`. Doctor checks the selected store locally without refreshing or validating tokens. Local workers should inherit the signed-in user's home (remove unnecessary home overrides), keeping their existing worktree and working directory. They reuse login across restarts and serialize refresh through the existing file lock. Separate remote hosts or containers require their own login. If a sandbox blocks the login callback, run login in a regular terminal on the same host as the same user. Configure credentials on the worker's own execution host; do not copy them into prompts or agent messages.
 
 Launch the interactive CLI:
 ```bash

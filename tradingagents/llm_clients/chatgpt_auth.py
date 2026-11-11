@@ -158,10 +158,16 @@ def _oauth_error(response) -> str:
         body = response.json()
     except ValueError:
         return f"HTTP {response.status_code}"
-    error = body.get("error")
+    error = body.get("error") if isinstance(body, dict) else None
     if isinstance(error, dict):
-        return error.get("code") or error.get("message") or f"HTTP {response.status_code}"
-    return error or f"HTTP {response.status_code}"
+        error = error.get("code")
+    # Only known protocol codes are safe; messages and unknown codes may echo secrets.
+    if isinstance(error, str) and error in {
+        "invalid_grant", "invalid_client", "invalid_request", "unauthorized_client",
+        "unsupported_grant_type", "invalid_scope", "access_denied",
+    }:
+        return error
+    return f"HTTP {response.status_code}"
 
 
 def _token_request(form: dict, task: str, refused: str) -> dict:
@@ -370,7 +376,7 @@ def sign_in(say: Callable[[str], None] = print, read_line: Callable[[], str] = i
 
     answer = callback.params
     if answer.get("error"):
-        raise ChatGPTAuthError(f"ChatGPT sign-in was not completed ({answer['error']}).")
+        raise ChatGPTAuthError("ChatGPT sign-in was not completed; run `tradingagents login chatgpt` again.")
     issued = answer.get("client_id") or client_id
     if issued == DYNAMIC_CLIENT_ID or (account.get("client_id") and issued != account["client_id"]):
         raise ChatGPTAuthError("ChatGPT sign-in did not register TradingAgents; run "
