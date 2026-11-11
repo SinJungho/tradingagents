@@ -28,6 +28,10 @@ Classify each research request into one type and follow its flow. Repeat request
 - Keep implementation and task status aligned with the approved OpenSpec scope; validate the change and archive it when complete.
 - Follow `openspec/config.yaml` for artifact language and formatting conventions.
 
+## Agent hooks
+
+- `.claude/settings.json` (Claude Code) and `.codex/hooks.json` plus `.codex/rules/` (Codex) enforce the `.env` ban, live-run confirmation, ruff on edited Python, and OpenSpec checks at stop. Both call `.claude/hooks/guard.py`; change behavior there and keep `tests/test_agent_hooks.py` passing.
+
 ## Verification
 
 - Run focused tests for changed behavior, then `./.venv/bin/python -m pytest -q`.
