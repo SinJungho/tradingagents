@@ -170,7 +170,13 @@ def format_api_failure(error: BaseException | APIFailure) -> str:
     retry = "예" if failure.retryable else "아니요"
     status = _status_from_error(error) if isinstance(error, BaseException) else None
     status_label = f"HTTP {status}: " if status is not None else ""
-    return f"{status_label}{_FAILURE_LABELS[failure.category]} (재시도 가능: {retry})"
+    # The class name alone is a safe clue for unclassified failures; never the message.
+    type_label = (
+        f" [{type(error).__name__}]"
+        if failure.category == "unknown" and isinstance(error, BaseException)
+        else ""
+    )
+    return f"{status_label}{_FAILURE_LABELS[failure.category]}{type_label} (재시도 가능: {retry})"
 
 
 def _origin(url: str) -> str | None:

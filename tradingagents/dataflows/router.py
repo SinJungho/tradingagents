@@ -5,6 +5,7 @@ from tradingagents.dataflows.errors import (
     NoMarketDataError,
     VendorNotConfiguredError,
     VendorUnavailableError,
+    record_source_failure,
 )
 from tradingagents.dataflows.vendors.alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
@@ -263,8 +264,10 @@ def route_to_vendor(method: str, *args, **kwargs):
     # report the vendors as the problem, not the instrument. It must not end
     # the run either.
     if last_unavailable is not None:
+        record_source_failure(method, last_unavailable)
         return vendor_unavailable(method, last_unavailable)
     if failed is not None and last_no_data is not None:
+        record_source_failure(method, failed)
         return vendor_unavailable(method, failed)
 
     # Every vendor that answered reported "no data": the symbol is genuinely unavailable.
@@ -288,6 +291,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     if first_error is not None:
         if category in OPTIONAL_CATEGORIES:
             logger.warning("Optional %s unavailable for %s: %s", category, method, first_error)
+            record_source_failure(method, first_error)
             return (
                 f"DATA_UNAVAILABLE: optional {category} could not be retrieved "
                 f"({first_error}). Proceed without it; do not fabricate values."

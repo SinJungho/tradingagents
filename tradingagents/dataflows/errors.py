@@ -17,6 +17,8 @@ they share ``NoMarketDataError`` and differ only in the free-text ``detail``.
 
 from __future__ import annotations
 
+import threading
+
 
 class VendorError(Exception):
     """Base for any condition where a vendor could not return usable data."""
@@ -56,3 +58,22 @@ class VendorNotConfiguredError(VendorError, ValueError):
     Also a ``ValueError`` so existing callers that catch ``ValueError`` keep
     working while the routing layer can treat it as "vendor unavailable".
     """
+
+
+# Data calls that degraded to a fallback message instead of raising. Callers
+# that write run reports drain this so the omission is visible beyond the logs.
+# ponytail: process-global list; use per-run context if runs ever share a process concurrently.
+_source_failures: list[tuple[str, BaseException]] = []
+_source_failures_lock = threading.Lock()
+
+
+def record_source_failure(method: str, error: BaseException) -> None:
+    with _source_failures_lock:
+        _source_failures.append((method, error))
+
+
+def drain_source_failures() -> list[tuple[str, BaseException]]:
+    with _source_failures_lock:
+        items = _source_failures[:]
+        _source_failures.clear()
+    return items

@@ -15,7 +15,7 @@ import tradingagents.dataflows.config as config_module
 import tradingagents.default_config as default_config
 from tradingagents.dataflows import router
 from tradingagents.dataflows.config import set_config
-from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.errors import NoMarketDataError, drain_source_failures
 
 
 def _reset_config():
@@ -104,12 +104,18 @@ class VendorRoutingTests(unittest.TestCase):
         # An optional enrichment vendor (FRED macro) that raises must NOT abort
         # the run — the router returns a sentinel so the analysis proceeds.
         set_config({"data_vendors": {"macro_data": "fred"}})
+        drain_source_failures()
         with self._route_method(
             "get_macro_indicators", {"fred": _raises(ValueError("FRED 400: bad series"))}
         ):
             result = router.route_to_vendor("get_macro_indicators", "cpi", "2026-01-01")
         self.assertIn("DATA_UNAVAILABLE", result)
         self.assertIn("macro_data", result)
+        # The degradation is also recorded so run reports can list it.
+        self.assertEqual(
+            [(method, type(error)) for method, error in drain_source_failures()],
+            [("get_macro_indicators", ValueError)],
+        )
 
     def test_core_category_still_raises_on_error(self):
         # A core category (single configured vendor) propagates the error so a

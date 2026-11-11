@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 import requests
 
 from tradingagents.dataflows.date_window import is_historical
+from tradingagents.dataflows.errors import record_source_failure
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ def get_prediction_markets(topic: str, limit: int | None = None, as_of_date: str
         data = _request("public-search", {"q": topic, "limit_per_type": 20})
     except requests.RequestException as e:
         logger.warning("Polymarket search failed for %r: %s", topic, e)
+        record_source_failure("get_prediction_markets", e)
         return (
             f"Polymarket data is currently unavailable (network error: {e}). "
             f"Proceed without prediction-market signal for '{topic}'."

@@ -7,6 +7,7 @@ import math
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
@@ -20,6 +21,7 @@ import typer
 from langsmith.run_helpers import tracing_context
 
 from tradingagents.api_diagnostics import format_api_failure
+from tradingagents.dataflows.errors import drain_source_failures
 from tradingagents.portfolio.analytics import (
     PortfolioAnalytics,
     analyze_portfolio,
@@ -1009,6 +1011,7 @@ def live(
         scenario_report = None
         omissions: list[str] = []
         if scenarios:
+            drain_source_failures()
             try:
                 scenario_report, scenario_omissions = _run_scenarios(
                     holdings,
@@ -1021,6 +1024,15 @@ def live(
                 omissions.extend(scenario_omissions)
             except Exception as exc:
                 failures.append(f"scenario analysis failed: {format_api_failure(exc)}")
+            finally:
+                counts = Counter(
+                    (method, format_api_failure(error))
+                    for method, error in drain_source_failures()
+                )
+                failures.extend(
+                    f"{method} data retrieval failed: {label} ({count}회)"
+                    for (method, label), count in counts.items()
+                )
         if scenario_report is not None and not selected_symbols:
             selected_symbols = [row.symbol for row in scenario_report.symbol_research]
         market_symbols = _market_symbols(holdings, selected_symbols, max_symbols)

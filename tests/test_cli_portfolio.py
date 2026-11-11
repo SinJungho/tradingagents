@@ -393,6 +393,60 @@ def test_full_workflow_requires_scenarios_before_broker_setup(tmp_path, monkeypa
     assert "TOSS_BROKER_READ_ONLY_VERIFIED" not in result.output
 
 
+def test_live_reports_degraded_optional_data_even_when_scenarios_fail(tmp_path, monkeypatch):
+    import requests
+
+    from tradingagents.dataflows.errors import VendorNotConfiguredError, record_source_failure
+
+    now = datetime.now(UTC)
+
+    class SyntheticAdapter:
+        def __init__(self, client_id, client_secret):
+            pass
+
+        def get_accounts(self):
+            account = portfolio_cli.Account(account_seq=987654321, account_type="synthetic")
+            return Accounts(accounts=(account,), retrieved_at=now)
+
+        def get_holdings(self, account_seq):
+            return Holdings((_holding(now),), retrieved_at=now)
+
+        def __getattr__(self, name):
+            def unavailable(*_args, **_kwargs):
+                raise RuntimeError("synthetic private response")
+
+            return unavailable
+
+    def failing_scenarios(*_args, **_kwargs):
+        record_source_failure("get_macro_indicators", VendorNotConfiguredError("synthetic key"))
+        for _ in range(2):
+            record_source_failure(
+                "get_prediction_markets", requests.ConnectionError("synthetic endpoint")
+            )
+        raise KeyError("synthetic private detail")
+
+    monkeypatch.setenv("TOSS_BROKER_READ_ONLY_VERIFIED", "I_ACKNOWLEDGE_READ_ONLY")
+    monkeypatch.setenv("TOSS_CLIENT_ID", "synthetic-client")
+    monkeypatch.setenv("TOSS_CLIENT_SECRET", "synthetic-secret")
+    monkeypatch.setattr("tradingagents.portfolio.toss.TossPortfolioAdapter", SyntheticAdapter)
+    monkeypatch.setattr(portfolio_cli, "_run_scenarios", failing_scenarios)
+
+    result = runner.invoke(
+        app, ["portfolio", "live", "--account-ordinal", "1", "--output-dir", str(tmp_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    report = PortfolioReport.model_validate_json(next(tmp_path.glob("*.json")).read_text("utf-8"))
+    assert {
+        "scenario analysis failed: 분류되지 않은 API 오류 [KeyError] (재시도 가능: 아니요)",
+        "get_macro_indicators data retrieval failed: 인증 설정 누락 (재시도 가능: 아니요) (1회)",
+        "get_prediction_markets data retrieval failed: 연결 오류 (재시도 가능: 예) (2회)",
+    } <= set(report.source_failures)
+    markdown = next(tmp_path.glob("*.md")).read_text("utf-8")
+    assert "get_prediction_markets data retrieval failed" in markdown
+    assert "synthetic" not in markdown
+
+
 def test_live_retains_partial_sources_and_never_writes_account_or_order_ids(tmp_path, monkeypatch):
     now = datetime.now(UTC)
     calls = []
@@ -505,8 +559,8 @@ def test_live_retains_partial_sources_and_never_writes_account_or_order_ids(tmp_
     assert report.converted_totals.buying_power_total is None
     assert report.converted_totals.portfolio_value_total is None
     assert report.source_failures == [
-        "buying-power retrieval failed for USD: 분류되지 않은 API 오류 (재시도 가능: 아니요)",
-        "closed order-history retrieval failed: 분류되지 않은 API 오류 (재시도 가능: 아니요)",
+        "buying-power retrieval failed for USD: 분류되지 않은 API 오류 [RuntimeError] (재시도 가능: 아니요)",
+        "closed order-history retrieval failed: 분류되지 않은 API 오류 [RuntimeError] (재시도 가능: 아니요)",
     ]
     assert any(source.source == "Toss Securities holdings API" for source in report.sources)
     assert any(source.source == "Toss Securities order history API" for source in report.sources)
