@@ -23,6 +23,9 @@ class DummyLLMClient(BaseLLMClient):
 
 @pytest.mark.unit
 class ModelValidationTests(unittest.TestCase):
+    def test_openai_deep_model_picker_defaults_to_gpt_6_1_sol(self):
+        self.assertEqual(get_model_options("openai", "deep")[0][1], "gpt-6.1-sol")
+
     def test_glm_5_3_flash_is_available_for_quick_and_deep_models(self):
         for mode in ("quick", "deep"):
             with self.subTest(mode=mode):

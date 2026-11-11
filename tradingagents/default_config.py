@@ -93,8 +93,10 @@ def build_default_config() -> dict:
         "llm_provider": "openai",
         # Keep API-key billing as the default; the local ChatGPT plan path is opt-in.
         "openai_auth": "api_key",
-        "deep_think_llm": "gpt-6-sol",
+        "deep_think_llm": "gpt-6.1-sol",
         "quick_think_llm": "gpt-6-luna",
+        # Used when no run-wide OpenAI reasoning effort is configured.
+        "quick_openai_reasoning_effort": "xhigh",
         # When None, each provider's client falls back to its own default endpoint
         # (api.openai.com for OpenAI, generativelanguage.googleapis.com for Gemini, ...).
         # The CLI overrides this per provider when the user picks one. Keeping a

@@ -14,8 +14,9 @@ from tradingagents.llm_clients import factory
 
 def _config(**overrides):
     config = {**default_config.DEFAULT_CONFIG, "llm_provider": "openai", "backend_url": "https://api.openai.com/v1",
-              "quick_think_llm": "gpt-6-luna", "deep_think_llm": "gpt-6-sol",
-              "openai_reasoning_effort": "low", "google_thinking_level": "high"}
+              "quick_think_llm": "gpt-6-luna", "deep_think_llm": "gpt-6.1-sol",
+              "openai_reasoning_effort": "low", "google_thinking_level": "high",
+              "quick_openai_reasoning_effort": "xhigh"}
     config.update(overrides)
     return config
 
@@ -34,7 +35,7 @@ def test_a_tier_without_its_own_provider_uses_the_run_s(monkeypatch):
     factory.create_tier_client(_config(), "deep")
 
     provider, model, base_url, kw = made[0]
-    assert (provider, model, base_url) == ("openai", "gpt-6-sol", "https://api.openai.com/v1")
+    assert (provider, model, base_url) == ("openai", "gpt-6.1-sol", "https://api.openai.com/v1")
     assert kw["reasoning_effort"] == "low"
 
 
@@ -60,7 +61,7 @@ def test_a_tier_url_is_used_for_that_tier_only(monkeypatch):
     factory.create_tier_client(config, "deep")
 
     assert made[0][:3] == ("openai_compatible", "local-model", "http://localhost:8000/v1")
-    assert made[1][:3] == ("openai", "gpt-6-sol", "https://api.openai.com/v1")
+    assert made[1][:3] == ("openai", "gpt-6.1-sol", "https://api.openai.com/v1")
 
 
 @pytest.mark.unit
@@ -76,6 +77,27 @@ def test_the_run_settings_and_report_name_each_tier_s_provider():
     assert settings["quick_think_provider"] == "openai" and settings["deep_think_provider"] == "anthropic"
     header = _header("NVDA", {}, settings)
     assert "deep anthropic claude-opus-5-5" in header and "quick openai gpt-6-luna" in header
+
+
+@pytest.mark.unit
+def test_quick_tier_uses_xhigh_by_default_without_changing_deep_tier(monkeypatch):
+    made = _captured(monkeypatch)
+    config = _config(openai_reasoning_effort=None)
+
+    factory.create_tier_client(config, "quick")
+    factory.create_tier_client(config, "deep")
+
+    assert made[0][3]["reasoning_effort"] == "xhigh"
+    assert "reasoning_effort" not in made[1][3]
+
+
+@pytest.mark.unit
+def test_global_reasoning_effort_overrides_quick_tier_default(monkeypatch):
+    made = _captured(monkeypatch)
+
+    factory.create_tier_client(_config(openai_reasoning_effort="high"), "quick")
+
+    assert made[0][3]["reasoning_effort"] == "high"
 
 
 @pytest.mark.unit

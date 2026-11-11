@@ -103,7 +103,8 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
         "deep": [
-            ("GPT-6 Sol - Complex reasoning and analysis", "gpt-6-sol"),
+            ("GPT-6.1 Sol - Complex reasoning and analysis", "gpt-6.1-sol"),
+            ("GPT-6 Sol - Previous generation", "gpt-6-sol"),
             ("GPT-6 Astra - Hardest multi-step reasoning", "gpt-6-astra"),
             ("GPT-5.6 - Previous-gen reasoning (Sol)", "gpt-5.6"),
             ("GPT-5.5 - Earlier frontier, 1M context", "gpt-5.5"),

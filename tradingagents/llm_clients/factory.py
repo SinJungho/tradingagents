@@ -161,6 +161,11 @@ def create_tier_client(config: dict, tier: str, **extra) -> BaseLLMClient:
         base_url = config.get(f"{tier}_think_backend_url") or config.get("backend_url")
     else:
         base_url = config.get(f"{tier}_think_backend_url")
-    kwargs = build_llm_kwargs({**config, "llm_provider": provider})
+    tier_config = {**config, "llm_provider": provider}
+    if not tier_config.get("openai_reasoning_effort"):
+        tier_config["openai_reasoning_effort"] = tier_config.get(
+            f"{tier}_openai_reasoning_effort"
+        )
+    kwargs = build_llm_kwargs(tier_config)
     return create_llm_client(provider=provider, model=config[f"{tier}_think_llm"], base_url=base_url,
                              **kwargs, **extra)
