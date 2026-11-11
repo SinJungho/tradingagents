@@ -440,3 +440,42 @@ def test_workflow_disables_langsmith_tracing_for_analyzer_and_model(monkeypatch)
     assert observed["analyzer"]["parent"] is None
     assert llm.tracing["enabled"] is False
     assert llm.tracing["parent"] is None
+
+
+def _synthesis_with_names(names, key="name"):
+    return json.dumps(
+        {
+            "summary": "Scenarios are conditional on the supplied evidence.",
+            "horizons": [
+                {key: name, "upside": _case(), "base": _case(), "downside": _case()}
+                for name in names
+            ],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("names", "key"),
+    [
+        (["Short-term", "medium (1-6 months)", "LONG"], "name"),
+        (["long", "short", "medium"], "name"),
+        (["short", "medium", "long"], "horizon"),
+    ],
+)
+def test_synthesis_accepts_horizon_name_variants_in_configured_order(names, key):
+    from tradingagents.portfolio.scenarios import _parse_synthesis
+
+    _, horizons = _parse_synthesis(_synthesis_with_names(names, key), ScenarioConfig())
+
+    assert [row.name for row in horizons] == ["short", "medium", "long"]
+
+
+@pytest.mark.parametrize(
+    "names",
+    [["short", "medium"], ["short", "Short-term", "long"], ["short", "medium", "year"]],
+)
+def test_synthesis_rejects_missing_or_duplicate_horizons(names):
+    from tradingagents.portfolio.scenarios import _parse_synthesis
+
+    with pytest.raises(ValueError, match="horizons do not match"):
+        _parse_synthesis(_synthesis_with_names(names), ScenarioConfig())

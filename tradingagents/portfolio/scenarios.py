@@ -813,10 +813,17 @@ def _parse_synthesis(
     summary = payload.get("summary")
     if not isinstance(summary, str) or not summary.strip():
         raise ValueError("scenario synthesis is missing its summary")
-    rows = payload["horizons"]
-    names = [row.get("name") if isinstance(row, Mapping) else None for row in rows]
-    if names != [horizon.name for horizon in config.horizons]:
+    # Models write "Short-term", "medium (1-6 months)" or reorder; match on the leading word.
+    by_name: dict[str, object] = {}
+    for row in payload["horizons"]:
+        raw = (row.get("name") or row.get("horizon")) if isinstance(row, Mapping) else None
+        match = re.match(r"[a-z]+", raw.strip().lower()) if isinstance(raw, str) else None
+        if match is None or match.group() in by_name:
+            raise ValueError("scenario synthesis horizons do not match the configured horizons")
+        by_name[match.group()] = row
+    if sorted(by_name) != sorted(horizon.name for horizon in config.horizons):
         raise ValueError("scenario synthesis horizons do not match the configured horizons")
+    rows = [by_name[horizon.name] for horizon in config.horizons]
 
     output = []
     for horizon, row in zip(config.horizons, rows, strict=True):
