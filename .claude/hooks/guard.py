@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,15 @@ LIVE_RUN = re.compile(
 )
 # A shell chain or substitution hides a live run from Codex's prefix rules.
 COMPOUND = re.compile(r"&&|\|\||[;|`]|\$\(")
+# The programs and leading arguments .codex/rules/tradingagents.rules prompts for; keep in sync.
+RULE_PROGRAMS = {"tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"}
+RULE_PREFIXES = (["portfolio", "live"], ["backtest"], ["--ticker"])
 PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
+# A heredoc body is text handed to a program, not files the shell opens.
+# ponytail: a heredoc piped into an interpreter is not inspected; the ban targets accidents, not evasion.
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.DOTALL)
+SHELLS = {"sh", "bash", "zsh"}
+CODE_FLAGS = {"-c", "-e"}
 ARCHIVE_STUB = "TBD - created by archiving change"
 
 
@@ -37,18 +46,67 @@ def _pre_tool(decision: str, reason: str) -> None:
         "permissionDecisionReason": reason}}, ensure_ascii=False))
 
 
-def _targets(payload: dict) -> list[str]:
-    """What the tool call reads or writes: a command, a path, or the files a patch touches."""
-    tool_input = payload.get("tool_input") or {}
-    if payload.get("tool_name") == "apply_patch":
-        return [(a or b).strip() for a, b in PATCH_FILE.findall(tool_input.get("command", ""))]
-    return [tool_input.get("command") or tool_input.get("file_path") or tool_input.get("path") or ""]
+def _patch_files(payload: dict) -> list[str]:
+    """The files an ``apply_patch`` call adds, updates, deletes or moves to."""
+    command = (payload.get("tool_input") or {}).get("command", "")
+    return [(a or b).strip() for a, b in PATCH_FILE.findall(command)]
+
+
+def _tokens(command: str) -> list[str] | None:
+    """Shell words with ``;&|<>()`` split off, or None when the command does not parse."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _is_env_path(text: str) -> bool:
+    # `--env-file=.env` and `host:.env` name the file after the separator.
+    return any(Path(part).name in ENV_NAMES for part in re.split(r"[=:]", text))
+
+
+def _shell_touches_env(command: str) -> bool:
+    """Whether a shell command names an env file as a word, not just mentions it in text.
+
+    A commit message or a heredoc that says ".env" opens nothing. Code passed to
+    a shell with ``-c`` is a command of its own; code passed to another
+    interpreter with ``-c``/``-e`` is searched for the file name.
+    """
+    tokens = _tokens(HEREDOC.sub("", command))
+    if tokens is None:
+        return bool(ENV_FILE.search(command))   # unparseable: judge the raw text
+    for index, token in enumerate(tokens):
+        if _is_env_path(token):
+            return True
+        if index >= 2 and tokens[index - 1] in CODE_FLAGS:
+            if Path(tokens[index - 2]).name in SHELLS:
+                if _shell_touches_env(token):
+                    return True
+            elif ENV_FILE.search(token):
+                return True
+    return False
 
 
 def env(payload: dict) -> None:
-    if any(ENV_FILE.search(t) or Path(t).name in ENV_NAMES for t in _targets(payload)):
+    tool_input = payload.get("tool_input") or {}
+    if payload.get("tool_name") == "apply_patch":
+        touched = any(_is_env_path(path) for path in _patch_files(payload))
+    elif payload.get("tool_name") == "Bash":
+        touched = _shell_touches_env(tool_input.get("command", ""))
+    else:
+        touched = _is_env_path(tool_input.get("file_path") or tool_input.get("path") or "")
+    if touched:
         _pre_tool("deny", "AGENTS.md: .env / .env.bak 값은 읽거나 수정하지 않습니다. "
                           "설정 키 이름이 필요하면 .env.example을 보세요.")
+
+
+def _rules_will_prompt(command: str) -> bool:
+    """Whether .codex/rules matches this command, so Codex itself asks the user."""
+    tokens = None if COMPOUND.search(command) else _tokens(command)
+    return bool(tokens) and tokens[0] in RULE_PROGRAMS and any(
+        tokens[1:1 + len(prefix)] == prefix for prefix in RULE_PREFIXES)
 
 
 def live(payload: dict, codex: bool = False) -> None:
@@ -57,15 +115,18 @@ def live(payload: dict, codex: bool = False) -> None:
         return
     if not codex:
         _pre_tool("ask", "AGENTS.md: 실계좌 조회·실제 LLM 분석은 사용자가 명시적으로 요청한 경우에만 실행합니다.")
-    elif COMPOUND.search(command):
-        # Codex hooks cannot ask; .codex/rules prompts the user, but only for a plain command.
-        _pre_tool("deny", "실계좌·LLM 실행은 사용자 확인을 받아야 합니다. 다른 명령과 묶지 말고 "
-                          "`tradingagents ...` 단독 명령으로 다시 실행하세요.")
+    elif not _rules_will_prompt(command):
+        # Codex hooks cannot ask, and its prefix rules only see a plain command in a known shape.
+        _pre_tool("deny", "실계좌·LLM 실행은 사용자 확인을 받아야 합니다. 다른 명령과 묶지 말고, 환경변수 접두사 "
+                          "없이 `tradingagents portfolio live ...`, `tradingagents backtest ...`, "
+                          "`tradingagents --ticker ...`(--ticker를 첫 인자로) 형태의 단독 명령으로 다시 실행하세요.")
 
 
 def ruff(payload: dict) -> None:
     cwd = Path(payload.get("cwd") or ROOT)
-    paths = [str(cwd / p) for p in _targets(payload) if p.endswith(".py") and (cwd / p).is_file()]
+    edited = (_patch_files(payload) if payload.get("tool_name") == "apply_patch"
+              else [(payload.get("tool_input") or {}).get("file_path", "")])
+    paths = [str(cwd / p) for p in edited if p.endswith(".py") and (cwd / p).is_file()]
     # A fresh worktree has no .venv of its own; fall back to ruff on PATH, else skip.
     venv_ruff = ROOT / ".venv/bin/ruff"
     ruff_bin = str(venv_ruff) if venv_ruff.is_file() else shutil.which("ruff")

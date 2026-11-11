@@ -37,7 +37,17 @@ def _patch(*headers: str, body: str = "") -> dict:
     ({"tool_name": "Read", "tool_input": {"file_path": "/repo/.env.bak"}}, "deny"),
     ({"tool_name": "Read", "tool_input": {"file_path": "/repo/.env.example"}}, None),
     (_bash("cat .env | head"), "deny"),
+    (_bash("cat .env|head"), "deny"),
+    (_bash("source ./.env && run"), "deny"),
+    (_bash("docker run --env-file=.env image"), "deny"),
+    (_bash("cp .env.bak /tmp/x"), "deny"),
+    (_bash("bash -c 'cat .env'"), "deny"),
+    (_bash("python3 -c \"print(open('.env').read())\""), "deny"),
     (_bash("grep KEY .env.example"), None),
+    # Text that only mentions the file opens nothing.
+    (_bash('git commit -m "feat: .env 접근 차단"'), None),
+    (_bash("python3 - <<'EOF'\nNAMES = ('.env', '.env.bak')\nEOF"), None),
+    (_bash("cat > notes.md <<EOF\ncopy .env.example to .env\nEOF\nwc -l notes.md"), None),
     (_patch("*** Update File: .env"), "deny"),
     (_patch("*** Add File: config/.env.bak"), "deny"),
     # A patch whose text merely mentions the file is not an edit of it.
@@ -53,6 +63,11 @@ def test_env_files_are_off_limits(payload, expected):
     ("cd /repo && tradingagents portfolio live", "ask", "deny"),       # hidden from the rules
     ("./.venv/bin/tradingagents backtest NVDA --start 2025-01-01 --end 2025-02-01", "ask", None),
     ("tradingagents --ticker NVDA --date 2026-11-10 | tee out", "ask", "deny"),
+    ("tradingagents --ticker NVDA --date 2026-11-10", "ask", None),
+    # Shapes the Codex prefix rules cannot see: a flag before --ticker, an absolute path, an env prefix.
+    ("tradingagents --checkpoint --ticker NVDA", "ask", "deny"),
+    ("/opt/repo/.venv/bin/tradingagents portfolio live", "ask", "deny"),
+    ("DEBUG=1 tradingagents portfolio live", "ask", "deny"),
     ("tradingagents portfolio demo", None, None),
     ("tradingagents style-backtest NVDA --start 2025-01-01 --end 2025-02-01", None, None),
 ])
