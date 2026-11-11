@@ -270,6 +270,16 @@ def get_closes(symbol: str, start_date: str, end_date: str) -> pd.Series:
     return history["Close"] if history is not None and "Close" in history else pd.Series(dtype=float)
 
 
+def get_splits(symbol: str) -> pd.Series:
+    """Share splits as ratios (10.0 for a 10-for-1) keyed by calendar day; empty when none."""
+    canonical = normalize_symbol(symbol)
+    splits = yf_retry(lambda: yf.Ticker(canonical).splits)
+    if splits is None or splits.empty:
+        return pd.Series(dtype=float)
+    splits.index = pd.DatetimeIndex(splits.index.date)
+    return splits
+
+
 def get_stock_stats(
     symbol: Annotated[str, "ticker symbol for the company"],
     indicator: Annotated[

@@ -16,6 +16,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
 from tradingagents.runtime_diagnostics import diagnose_runtime
+from tradingagents.style_scores import evaluate_styles
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
 # the platform at import time), so gate on the platform rather than catching the
@@ -169,6 +170,28 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+@app.command("style-backtest")
+def style_backtest(
+    tickers: str = typer.Argument(..., help="Comma-separated US tickers, e.g. NVDA,AAPL"),
+    start: str = typer.Option(..., "--start", help="First analysis date, YYYY-MM-DD"),
+    end: str = typer.Option(..., "--end", help="Last analysis date, YYYY-MM-DD"),
+    every: int = typer.Option(30, "--every", help="Days between analysis dates"),
+):
+    """Check whether code-computed style signals predicted alpha. Calls no model."""
+    names = [t.strip() for t in tickers.split(",") if t.strip()]
+    try:
+        dates = iter_grid(start, end, every)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    if not names:
+        console.print("[red]No ticker to score; pass them comma-separated, e.g. NVDA,AAPL[/red]")
+        raise typer.Exit(code=1)
+    result = evaluate_styles(names, dates, progress=lambda done, total, ticker: console.print(
+        f"[dim][{done}/{total}] {ticker}[/dim]"))
+    console.print(escape(result.render()))
 
 
 # The plans `login` and `logout` take: the providers signed in to, not keyed.

@@ -401,6 +401,16 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. A decision is entered at the first close after its date, because a run reads news published after that day's close. Your own memory log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
 
+### Style scores without a model
+
+`tradingagents.style_scores` computes value (earnings yield), growth (fiscal-year revenue growth), quality (return on equity) and momentum (12-1 month return) signals by arithmetic alone: SEC EDGAR figures as filed by the date, prices cut at the date, and the price restated in filing-day shares across later splits. A style whose inputs are missing reports `Abstain`, never `Neutral`. `style-backtest` checks whether those signals predicted alpha, each over its own horizon (252 trading days for value, growth and quality; 63 for momentum), without calling a model:
+
+```bash
+tradingagents style-backtest NVDA,AAPL,MSFT --start 2022-12-01 --end 2026-08-01 --every 30
+```
+
+A first run over 40 US large caps found no signal ordered Bullish > Neutral > Bearish (see `openspec/changes/archive/2026-11-11-style-factor-scores/README.md`). Tickers chosen today miss the names that later failed, monthly cells with year-long windows overlap, and thresholds are fixed rather than sector-relative, so treat the output as indicative.
+
 ## Reproducibility
 
 TradingAgents is LLM-driven, so two runs of the same ticker and date can differ. This is expected for a research tool built on language models, not a defect. The variation comes from a few distinct sources, and it helps to separate them.

@@ -153,7 +153,14 @@ def _span_index(fact: dict, spans: tuple[tuple[int, int], ...]) -> int | None:
 
 def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tuple[int, int], ...],
            forms: tuple[str, ...] = ()) -> tuple[dict, str]:
-    """({(period end, span index): value}, unit) for the tags the filer reports, as known then.
+    """({(period end, span index): value}, unit) for the tags the filer reports, as known then."""
+    chosen, unit = _as_of_facts(facts, tags, as_of_date, spans, forms)
+    return {key: fact["val"] for key, fact in chosen.items()}, unit
+
+
+def _as_of_facts(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tuple[int, int], ...],
+                 forms: tuple[str, ...] = ()) -> tuple[dict, str]:
+    """({(period end, span index): fact}, unit) for the tags the filer reports, as known then.
 
     A period reported more than once takes its latest filing on or before the
     date, so an amendment counts from the day it was filed and not before. The
@@ -162,7 +169,7 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
     duration fact (revenue, cash flow) must cover one of ``spans``; an instant
     fact (a balance) has no span and serves any.
     """
-    values: dict[tuple[str, int], float] = {}
+    values: dict[tuple[str, int], dict] = {}
     chosen_unit = "USD"
     # Tags are tried in order and a period keeps the first one that reports it:
     # filers renamed lines over the years, so one tag covers only part of the
@@ -184,7 +191,7 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
             latest = {key: fact for key, fact in latest.items() if key in covered}
             if latest:
                 chosen_unit = unit
-                values.update({key: fact["val"] for key, fact in latest.items()})
+                values.update(latest)
     return dict(sorted(values.items())), chosen_unit
 
 
@@ -268,3 +275,23 @@ def get_income_statement(ticker: str, freq: str = "quarterly", as_of_date: str |
 def get_cashflow(ticker: str, freq: str = "quarterly", as_of_date: str | None = None) -> str:
     """Cash flow statement as filed on or before ``as_of_date``."""
     return _statement("cashflow", ticker, freq, as_of_date, "Cash Flow Statement")
+
+
+def get_annual_facts(ticker: str, labels: tuple[str, ...], as_of_date: str) -> dict[str, list[dict]]:
+    """Fiscal-year facts of the named statement lines as filed on or before ``as_of_date``.
+
+    Each label maps to its facts oldest first, each with its period ``end``, ``val``
+    and the ``filed`` date of the filing it was read from: a per-share figure is
+    stated in the shares of that day, so a reader comparing it with a price needs it.
+    """
+    cik = cik_for(ticker)
+    if cik is None:
+        raise NoMarketDataError(ticker, ticker, "not a US SEC filer")
+    us_gaap = ((_cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json").get("facts") or {})
+               .get("us-gaap"))
+    if not us_gaap:
+        raise NoMarketDataError(ticker, ticker, "US filer with no us-gaap facts")
+    tags = {label: line_tags for lines in _STATEMENTS.values() for label, line_tags in lines}
+    return {label: list(_as_of_facts(us_gaap, tags[label], as_of_date, (_SPANS["annual"],),
+                                     _ANNUAL_FORMS)[0].values())
+            for label in labels}
