@@ -8,7 +8,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, localcontext
 
-from tradingagents.portfolio.models import BuyingPower, Holding, Holdings, Order, Orders
+from tradingagents.portfolio.models import (
+    BuyingPower,
+    Holding,
+    Holdings,
+    HoldingsSummary,
+    Order,
+    Orders,
+    Transaction,
+    Transactions,
+)
 
 _DECIMAL_PRECISION = 28
 _US_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.-]*$")
@@ -38,6 +47,7 @@ class SourceMetadata:
 class FXMetadata:
     rate: Decimal | None
     timestamp: datetime | None
+    valid_until: datetime | None
     source_currency: str
     target_currency: str
     applied: bool
@@ -60,6 +70,12 @@ class PositionAnalytics:
     profit_loss_source: str | None
     profit_loss_after_cost: Decimal | None
     profit_loss_after_cost_source: str | None
+    profit_loss_rate: Decimal | None
+    profit_loss_rate_after_cost: Decimal | None
+    daily_profit_loss: Decimal | None
+    daily_profit_loss_rate: Decimal | None
+    commission: Decimal | None
+    tax: Decimal | None
     security_weight: Decimal | None
     currency_portfolio_weight: Decimal | None
     retrieved_at: datetime | None
@@ -145,6 +161,36 @@ class OrderAnalytics:
 
 
 @dataclass(frozen=True)
+class TransactionCount:
+    key: str
+    count: int
+
+
+@dataclass(frozen=True)
+class TransactionAnalytics:
+    count: int
+    by_type: tuple[TransactionCount, ...]
+    by_asset_class: tuple[TransactionCount, ...]
+    settled_count: int
+    unsettled_count: int
+    cancellation_count: int
+    retrieved_at: datetime | None
+    has_more: bool
+    coverage_warnings: tuple[str, ...]
+    realized_profit_loss: tuple[RealizedProfitLoss, ...] = ()
+
+
+@dataclass(frozen=True)
+class RealizedProfitLoss:
+    currency: str
+    before_cost: Decimal | None
+    after_cost: Decimal | None
+    complete: bool
+    method: str
+    caveat: str | None = None
+
+
+@dataclass(frozen=True)
 class ConvertedTotals:
     currency: str
     market_value_total: Decimal | None
@@ -163,8 +209,10 @@ class PortfolioAnalytics:
     concentration_by_market: tuple[Concentration, ...]
     concentration_by_currency: tuple[Concentration, ...]
     orders: OrderAnalytics | None
+    transactions: TransactionAnalytics | None
     converted_totals: ConvertedTotals | None
     fx: FXMetadata | None
+    holdings_summary: HoldingsSummary | None
     sources: tuple[SourceMetadata, ...]
     coverage_warnings: tuple[str, ...]
     account_wide_coverage: str
@@ -189,9 +237,12 @@ def analyze_portfolio(
     holdings: Holdings | None = None,
     buying_power: Sequence[BuyingPower] | None = None,
     orders: Orders | None = None,
+    transactions: Transactions | None = None,
     *,
     fx_rate: Decimal | None = None,
     fx_timestamp: datetime | None = None,
+    fx_valid_until: datetime | None = None,
+    fx_retrieved_at: datetime | None = None,
     fx_source_currency: str = "KRW",
     fx_target_currency: str = "USD",
     as_of: datetime | None = None,
@@ -211,6 +262,12 @@ def analyze_portfolio(
         raise ValueError("fx_rate must be finite and positive")
     if fx_timestamp is not None and not isinstance(fx_timestamp, datetime):
         raise TypeError("fx_timestamp must be a datetime")
+    if fx_valid_until is not None and not isinstance(fx_valid_until, datetime):
+        raise TypeError("fx_valid_until must be a datetime")
+    if fx_retrieved_at is not None and not isinstance(fx_retrieved_at, datetime):
+        raise TypeError("fx_retrieved_at must be a datetime")
+    if fx_timestamp is not None and fx_valid_until is not None and fx_timestamp >= fx_valid_until:
+        raise ValueError("FX validity must end after it starts")
 
     buying_power_inputs = tuple(buying_power or ())
     fx_source_currency = fx_source_currency.strip().upper()
@@ -220,16 +277,29 @@ def analyze_portfolio(
     ):
         raise ValueError("FX source and target currencies must be non-empty")
     fx_stale = _stale(fx_timestamp, as_of, stale_after)
+    if fx_valid_until is not None:
+        if as_of is None:
+            fx_stale = None
+        else:
+            fx_stale = bool(
+                (fx_timestamp is not None and as_of < fx_timestamp)
+                or as_of >= fx_valid_until
+            )
     fx_applied = (
         fx_rate is not None
         and fx_timestamp is not None
         and fx_source_currency != fx_target_currency
-        and (stale_after is None or fx_stale is False)
+        and (
+            fx_stale is False
+            if fx_valid_until is not None or stale_after is not None
+            else True
+        )
     )
     fx = (
         FXMetadata(
             fx_rate,
             fx_timestamp,
+            fx_valid_until,
             fx_source_currency,
             fx_target_currency,
             fx_applied,
@@ -264,6 +334,24 @@ def analyze_portfolio(
             orders.coverage_warnings if orders else (),
             orders is not None,
         ),
+        SourceMetadata(
+            "transactions",
+            transactions.retrieved_at if transactions else None,
+            None,
+            transactions.coverage_warnings if transactions else (),
+            transactions is not None,
+        ),
+        SourceMetadata(
+            "exchange_rate",
+            fx_retrieved_at or fx_timestamp,
+            fx_timestamp,
+            (
+                "Toss mid-market reference rate is informational and may differ from the execution rate.",
+            )
+            if fx_rate is not None
+            else (),
+            fx_rate is not None and fx_timestamp is not None,
+        ),
     )
     coverage_warnings = tuple(
         f"{source.source}: {warning}"
@@ -285,13 +373,17 @@ def analyze_portfolio(
         )
         if orders.has_more:
             unknowns.append("The provider reports more order records than were returned.")
+    if transactions is None:
+        unknowns.append("Transactions were not supplied; transaction activity is unknown.")
+    elif transactions.has_more:
+        unknowns.append("The provider reports more transaction records than were returned.")
     if fx is not None:
         if fx.rate is None or fx.timestamp is None:
             unknowns.append("FX conversion was not applied because both a rate and timestamp are required.")
         elif fx.source_currency == fx.target_currency:
             unknowns.append("FX conversion was not applied because source and target currencies match.")
         elif not fx.applied:
-            unknowns.append("FX conversion was omitted because its timestamp is stale or unknown.")
+            unknowns.append("FX conversion was omitted because its quote is expired, stale, or has unknown validity.")
 
     position_data: list[dict[str, object]] = []
     for item in holdings.holdings if holdings else ():
@@ -391,15 +483,29 @@ def analyze_portfolio(
         cash_records = [data for data in bp_data if data["currency"] == currency]
         included_positions = [data for data in positions if data["included"]]
         included_cash = [data for data in cash_records if data["included"]]
-        market_total = _sum_values(
-            data["market_value"]
-            for data in included_positions
-            if data["market_value"] is not None
+        market_total = (
+            _sum_values(
+                data["market_value"]
+                for data in included_positions
+                if data["market_value"] is not None
+            )
+            if positions or holdings is None
+            else Decimal(0)
         )
-        purchase_total = _sum_values(data["purchase_amount"] for data in included_positions)
-        profit_total = _sum_values(data["profit_loss"] for data in included_positions)
-        after_cost_total = _sum_values(
-            data["profit_loss_after_cost"] for data in included_positions
+        purchase_total = (
+            _sum_values(data["purchase_amount"] for data in included_positions)
+            if positions or holdings is None
+            else Decimal(0)
+        )
+        profit_total = (
+            _sum_values(data["profit_loss"] for data in included_positions)
+            if positions or holdings is None
+            else Decimal(0)
+        )
+        after_cost_total = (
+            _sum_values(data["profit_loss_after_cost"] for data in included_positions)
+            if positions or holdings is None
+            else Decimal(0)
         )
         bp_total = _sum_values(data["item"].cash_buying_power for data in included_cash)
         market_missing = sum(
@@ -515,6 +621,12 @@ def analyze_portfolio(
             profit_loss_source=data["profit_loss_source"],
             profit_loss_after_cost=data["profit_loss_after_cost"],
             profit_loss_after_cost_source=data["profit_loss_after_cost_source"],
+            profit_loss_rate=data["item"].profit_loss_rate,
+            profit_loss_rate_after_cost=data["item"].profit_loss_rate_after_cost,
+            daily_profit_loss=data["item"].daily_profit_loss,
+            daily_profit_loss_rate=data["item"].daily_profit_loss_rate,
+            commission=data["item"].commission,
+            tax=data["item"].tax,
             security_weight=position_weights.get(index),
             currency_portfolio_weight=position_weights.get(index + len(position_data)),
             retrieved_at=data["timestamp"],
@@ -544,6 +656,7 @@ def analyze_portfolio(
     converted = _convert_totals(currency_rows, usable_fx)
     concentration_by_currency = _currency_concentrations(currency_rows, usable_fx)
     order_summary = _summarize_orders(orders, as_of, stale_after)
+    transaction_summary = _summarize_transactions(transactions, holdings)
 
     if any(data["unknowns"] for data in position_data):
         unknowns.extend(
@@ -566,8 +679,10 @@ def analyze_portfolio(
         concentration_by_market=concentration_by_market,
         concentration_by_currency=concentration_by_currency,
         orders=order_summary,
+        transactions=transaction_summary,
         converted_totals=converted,
         fx=fx,
+        holdings_summary=holdings.summary if holdings else None,
         sources=sources,
         coverage_warnings=coverage_warnings,
         account_wide_coverage=account_wide_coverage,
@@ -856,3 +971,161 @@ def _summarize_orders(
         has_more=orders.has_more,
         coverage_warnings=warnings,
     )
+
+
+def _summarize_transactions(
+    transactions: Transactions | None, holdings: Holdings | None
+) -> TransactionAnalytics | None:
+    if transactions is None:
+        return None
+    by_type: dict[str, int] = {}
+    by_asset_class: dict[str, int] = {}
+    for transaction in transactions.transactions:
+        by_type[transaction.transaction_type] = by_type.get(transaction.transaction_type, 0) + 1
+        asset_class = transaction.asset_class or "CASH_OR_UNCLASSIFIED"
+        by_asset_class[asset_class] = by_asset_class.get(asset_class, 0) + 1
+    realized = _realized_profit_loss(transactions, holdings)
+    return TransactionAnalytics(
+        count=len(transactions.transactions),
+        by_type=tuple(TransactionCount(key, count) for key, count in sorted(by_type.items())),
+        by_asset_class=tuple(
+            TransactionCount(key, count) for key, count in sorted(by_asset_class.items())
+        ),
+        settled_count=sum(row.settled for row in transactions.transactions),
+        unsettled_count=sum(not row.settled for row in transactions.transactions),
+        cancellation_count=sum(row.is_cancellation for row in transactions.transactions),
+        retrieved_at=transactions.retrieved_at,
+        has_more=transactions.has_more,
+        coverage_warnings=transactions.coverage_warnings,
+        realized_profit_loss=realized,
+    )
+
+
+def _realized_profit_loss(
+    transactions: Transactions, holdings: Holdings | None
+) -> tuple[RealizedProfitLoss, ...]:
+    """Estimate stock realized P&L only when a complete, usable trade ledger exists."""
+    rows = [
+        row for row in transactions.transactions
+        if (row.asset_class or "").upper() in {"STOCK", "EQUITY"}
+        and not row.is_cancellation
+    ]
+    holding_rows = holdings.holdings if holdings is not None else ()
+    currencies = sorted(
+        {(row.currency or "UNKNOWN").upper() for row in rows}
+        | {(row.currency or "UNKNOWN").upper() for row in holding_rows}
+    )
+    if not currencies:
+        return ()
+    if transactions.has_more:
+        return tuple(_unknown_realized(currency, "거래 페이지가 남아 있어 원장이 불완전합니다.") for currency in currencies)
+
+    grouped: dict[str, list[Transaction]] = {currency: [] for currency in currencies}
+    for row in rows:
+        currency = (row.currency or "UNKNOWN").upper()
+        grouped[currency].append(row)
+    results = []
+    for currency, currency_rows in grouped.items():
+        trade_rows = [row for row in currency_rows if row.transaction_type in {"BUY", "SELL"}]
+        has_unsupported = any(
+            row.transaction_type not in {"BUY", "SELL", "DIVIDEND"}
+            for row in currency_rows
+        )
+        reason = None
+        if currency == "UNKNOWN" or holdings is None:
+            reason = "현재 보유 자료가 없어 거래 원장 잔량을 검증할 수 없습니다."
+        elif not trade_rows:
+            reason = "해당 통화의 매수·매도 기록이 없습니다."
+        elif has_unsupported:
+            reason = "증권 이체 등 매수·매도 외 주식 거래가 있어 원가가 불완전합니다."
+        elif any(
+                row.symbol is None
+                or row.quantity is None
+                or row.quantity <= 0
+                or row.amount is None
+                or row.transaction_time is None
+                or not row.settled
+                for row in trade_rows
+        ):
+            reason = "매수·매도 기록에 필수 가격·수량·시각이 없거나 미결제 거래가 있습니다."
+        if reason:
+            results.append(_unknown_realized(currency, reason))
+            continue
+        ordering = [(row.symbol, row.transaction_time) for row in trade_rows]
+        if len(ordering) != len(set(ordering)):
+            results.append(_unknown_realized(currency, "거래 시각이 겹쳐 매매 순서를 확정할 수 없습니다."))
+            continue
+        inventory: dict[str, tuple[Decimal, Decimal, Decimal]] = {}
+        before_cost = Decimal(0)
+        after_cost = Decimal(0)
+        complete = True
+        incomplete_reason = "거래 기록만으로 보유 원가를 완전하게 재구성할 수 없습니다."
+        for row in sorted(trade_rows, key=lambda item: item.transaction_time):
+            symbol = row.symbol or ""
+            quantity, basis, basis_after_cost = inventory.get(
+                symbol, (Decimal(0), Decimal(0), Decimal(0))
+            )
+            fees_available = row.commission is not None and row.tax is not None
+            fees = (row.commission or Decimal(0)) + (row.tax or Decimal(0))
+            gross_amount = abs(row.amount or Decimal(0))
+            net_amount = abs(row.net_amount) if row.net_amount is not None else None
+            if row.transaction_type == "BUY":
+                if quantity < 0:
+                    complete = False
+                    incomplete_reason = "매수 원가를 계산할 수 없습니다."
+                    break
+                inventory[symbol] = (
+                    quantity + row.quantity,
+                    basis + gross_amount,
+                    basis_after_cost + (net_amount if net_amount is not None else gross_amount + fees),
+                )
+                if not fees_available:
+                    complete = False
+                    incomplete_reason = "매수 수수료·세금 자료가 없어 비용 후 원가를 검증할 수 없습니다."
+                continue
+            if quantity < row.quantity or quantity == 0:
+                complete = False
+                incomplete_reason = "매도 수량이 선행 매수 잔량보다 큽니다."
+                break
+            allocated_basis = basis * row.quantity / quantity
+            allocated_after_cost = basis_after_cost * row.quantity / quantity
+            before_cost += gross_amount - allocated_basis
+            if net_amount is None or not fees_available:
+                complete = False
+                incomplete_reason = "매도 결제금액·수수료·세금 자료가 없어 비용 후 손익을 계산할 수 없습니다."
+            else:
+                after_cost += net_amount - allocated_after_cost
+            inventory[symbol] = (
+                quantity - row.quantity,
+                basis - allocated_basis,
+                basis_after_cost - allocated_after_cost,
+            )
+        if complete:
+            ledger_quantity = {
+                symbol: values[0]
+                for symbol, values in inventory.items()
+                if values[0] != 0
+            }
+            holdings_quantity: dict[str, Decimal] = {}
+            for holding in holding_rows:
+                if (holding.currency or "").upper() == currency:
+                    holdings_quantity[holding.symbol] = (
+                        holdings_quantity.get(holding.symbol, Decimal(0)) + holding.quantity
+                    )
+            if ledger_quantity != holdings_quantity:
+                complete = False
+                incomplete_reason = "거래 원장 잔량이 현재 보유 수량과 일치하지 않습니다."
+        if not complete:
+            results.append(_unknown_realized(currency, incomplete_reason))
+        else:
+            results.append(
+                RealizedProfitLoss(
+                    currency, before_cost, after_cost, True,
+                    "거래내역 가중평균원가 추정 (세무·회계 원장 아님)",
+                )
+            )
+    return tuple(results)
+
+
+def _unknown_realized(currency: str, caveat: str) -> RealizedProfitLoss:
+    return RealizedProfitLoss(currency, None, None, False, "산출 불가", caveat)

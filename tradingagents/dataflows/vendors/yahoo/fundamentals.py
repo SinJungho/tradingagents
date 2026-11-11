@@ -20,6 +20,60 @@ from tradingagents.dataflows.vendors.yahoo.common import (
 _MAIN_UNIT = {"GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR", "ILA": "ILS"}
 
 
+def _format_fund_value(value) -> str | None:
+    if value is None or getattr(value, "empty", False):
+        return None
+    if hasattr(value, "head") and hasattr(value, "to_csv"):
+        return value.head(10).to_csv()
+    if isinstance(value, dict):
+        return "\n".join(f"{key}: {item}" for key, item in value.items())[:2000]
+    return str(value)[:2000]
+
+
+def _fund_fundamentals(ticker: str, ticker_data, info: dict) -> str:
+    currency = info.get("currency")
+    lines = [
+        f"# Fund data for {ticker}",
+        "\nProvider snapshot; a single observation timestamp is not supplied for these fields.",
+    ]
+    for label, key, is_money in (
+        ("Fund category", "category", False),
+        ("Net assets", "totalAssets", True),
+        ("NAV price", "navPrice", True),
+        ("Distribution yield", "yield", False),
+        ("Annual expense ratio (provider value)", "annualReportExpenseRatio", False),
+    ):
+        value = info.get(key)
+        if value is not None:
+            suffix = f" {currency}" if is_money and currency else ""
+            lines.append(f"{label}: {value}{suffix}")
+
+    try:
+        funds_data = yf_retry(lambda: ticker_data.funds_data)
+    except Exception as exc:
+        lines.append(f"Fund detail tables: unavailable ({type(exc).__name__})")
+        funds_data = None
+    if funds_data is not None:
+        for label, attr in (
+            ("Fund overview", "fund_overview"),
+            ("Fund operations", "fund_operations"),
+            ("Asset classes", "asset_classes"),
+            ("Top holdings", "top_holdings"),
+            ("Sector weights", "sector_weightings"),
+        ):
+            try:
+                value = yf_retry(lambda attr=attr: getattr(funds_data, attr))
+            except Exception as exc:
+                lines.extend((f"## {label}", f"Unavailable ({type(exc).__name__})"))
+                continue
+            rendered = _format_fund_value(value)
+            lines.extend((f"## {label}", rendered or "No data returned"))
+
+    if len(lines) <= 2:
+        raise_for_empty(ticker, ticker, "fund overview")
+    return "\n\n".join(lines)
+
+
 def get_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
     as_of_date: Annotated[str, "analysis date in YYYY-MM-DD format"] = None
@@ -41,6 +95,9 @@ def get_fundamentals(
     info = yf_retry(lambda: yf.Ticker(canonical).info)
     if not info:
         raise_for_empty(ticker, canonical, "fundamentals")
+    if str(info.get("quoteType") or "").upper() in {"ETF", "MUTUALFUND", "MUTUAL FUND"}:
+        ticker_data = yf_retry(lambda: yf.Ticker(canonical))
+        return _fund_fundamentals(canonical, ticker_data, info)
 
     # Yahoo gives these two in percent (dividendYield 0.41 is 0.41%; debtToEquity
     # 78.4 is 78.4%, a ratio of 0.78) but the margins and returns as fractions,

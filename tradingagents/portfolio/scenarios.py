@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langsmith.run_helpers import tracing_context
 
+from tradingagents.api_diagnostics import classify_api_failure
 from tradingagents.portfolio.analytics import OrderAnalytics, PortfolioAnalytics, map_market_symbol
 from tradingagents.portfolio.models import Holding, Holdings
 
@@ -114,6 +115,19 @@ class SymbolResearchResult:
     market_country: str
     exposures: tuple[SymbolExposure, ...]
     portfolio_relation: Literal["holding", "watchlist"] = "holding"
+    failure_category: str | None = None
+    retryable: bool | None = None
+
+
+@dataclass(frozen=True)
+class TradingDecisionResult:
+    """Curated output from the Trader, Risk and Portfolio Manager stages."""
+
+    symbol: str
+    trader_plan: str
+    risk_debate: str
+    final_decision: str
+    rating: str
 
 
 @dataclass(frozen=True)
@@ -147,6 +161,7 @@ class PortfolioScenarioReport:
     symbols_researched: int
     unmapped_holdings: int
     omitted_symbols: int
+    trading_decisions: tuple[TradingDecisionResult, ...] = ()
 
 
 class _ScenarioState(TypedDict, total=False):
@@ -195,6 +210,11 @@ def _sanitize_text(value: str, *, limit: int) -> str:
     value = _SENSITIVE_FIELD_RE.sub("[REDACTED]", value)
     value = _BEARER_RE.sub("[REDACTED]", value)
     return value[:limit].strip()
+
+
+def sanitize_portfolio_text(value: str, *, limit: int = 6000) -> str:
+    """Redact sensitive-looking values and bound curated agent text for reports."""
+    return _sanitize_text(value, limit=limit)
 
 
 def _safe_decimal(value: object) -> Decimal | None:
@@ -973,8 +993,9 @@ class PortfolioScenarioWorkflow:
                         research_input.portfolio_relation,
                     )
                 )
-            except Exception:
+            except Exception as exc:
                 # Keep the symbol-level failure without exposing provider exception data.
+                failure = classify_api_failure(exc)
                 results.append(
                     SymbolResearchResult(
                         research_input.symbol,
@@ -983,6 +1004,8 @@ class PortfolioScenarioWorkflow:
                         research_input.market_country,
                         research_input.exposures,
                         research_input.portfolio_relation,
+                        failure.category,
+                        failure.retryable,
                     )
                 )
         return {"research_results": tuple(results), "symbols_researched": symbols_researched}

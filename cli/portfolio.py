@@ -3,24 +3,30 @@
 from __future__ import annotations
 
 import copy
+import math
 import os
 import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import typer
 from langsmith.run_helpers import tracing_context
 
+from tradingagents.api_diagnostics import format_api_failure
 from tradingagents.portfolio.analytics import (
     PortfolioAnalytics,
     analyze_portfolio,
     map_market_symbol,
 )
+from tradingagents.portfolio.context import PortfolioContext, Position
+from tradingagents.portfolio.history import SnapshotComparison, append_portfolio_snapshot
 from tradingagents.portfolio.models import (
     Account,
     Accounts,
@@ -46,7 +52,10 @@ from tradingagents.portfolio.scenarios import (
     ScenarioCase,
     ScenarioConfig,
     SymbolResearchResult,
+    TradingDecisionResult,
+    sanitize_portfolio_text,
 )
+from tradingagents.portfolio.technical import TechnicalSnapshot, analyze_daily_candles
 
 portfolio_app = typer.Typer(
     name="portfolio",
@@ -58,10 +67,14 @@ _ACK_VALUE = "I_ACKNOWLEDGE_READ_ONLY"
 _MAX_SYMBOLS = 10
 _MAX_ORDER_DAYS = 90
 _ORDER_PAGE_LIMIT = 3
-_SYMBOL_RESEARCH_STEP_LIMIT = 20
+_TRANSACTION_PAGE_LIMIT = 10
+# Three analysts can each use three tool rounds (market history, indicators,
+# then the verified market snapshot) while staying within the portfolio cap.
+_SYMBOL_RESEARCH_STEP_LIMIT = 24
 _ANALYST_SECTION_CHARS = 1800
 _SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,31}$")
 _OUTPUT_DIR = Path.home() / ".tradingagents" / "portfolio"
+_KOREA_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 
 @contextmanager
@@ -86,8 +99,17 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _today_kst(now: datetime | None = None) -> date:
+    return (now or _now()).astimezone(_KOREA_TIMEZONE).date()
+
+
+def _portfolio_tool_round_limit(configured_rounds: int, step_limit: int, analyst_count: int) -> int:
+    per_analyst_steps = step_limit // analyst_count
+    return min(configured_rounds, max(1, (per_analyst_steps - 1) // 2))
+
+
 def _default_order_dates(today: date | None = None) -> tuple[date, date]:
-    end = today or _now().date()
+    end = today or _today_kst()
     return end - timedelta(days=29), end
 
 
@@ -99,14 +121,20 @@ def _validate_request(
 ) -> tuple[date, date, list[str]]:
     if not 1 <= max_symbols <= _MAX_SYMBOLS:
         raise typer.BadParameter(f"--max-symbols must be between 1 and {_MAX_SYMBOLS}.")
-    default_from, default_to = _default_order_dates()
-    start = orders_from or default_from
-    end = orders_to or default_to
+    today = _today_kst()
+    if orders_from is not None:
+        start = orders_from
+        end = orders_to or today
+    elif orders_to is not None:
+        end = orders_to
+        start = end - timedelta(days=29)
+    else:
+        start, end = _default_order_dates(today)
     if start > end:
         raise typer.BadParameter("--orders-from must be on or before --orders-to.")
     if (end - start).days >= _MAX_ORDER_DAYS:
         raise typer.BadParameter(f"The order date range must be at most {_MAX_ORDER_DAYS} days.")
-    if end > _now().date():
+    if end > today:
         raise typer.BadParameter("--orders-to cannot be in the future.")
 
     normalized = [symbol.strip().upper() for symbol in symbols or []]
@@ -164,7 +192,9 @@ def _request_scope(
     return RequestScope(
         orders_from=start,
         orders_to=end,
+        transactions_from=None,
         max_pages_per_status=_ORDER_PAGE_LIMIT,
+        max_transaction_pages=_TRANSACTION_PAGE_LIMIT,
         max_symbols=max_symbols,
         selected_symbols=selected_symbols,
         symbol_selection="explicit" if explicit else "all_returned_holdings",
@@ -335,7 +365,7 @@ def demo(
         as_of=now,
         stale_after=timedelta(hours=24),
     )
-    start, end = _default_order_dates(now.date())
+    start, end = _default_order_dates(_today_kst(now))
     report = build_portfolio_report(
         mode="demo",
         generated_at=now,
@@ -410,16 +440,18 @@ def _fetch_portfolio(adapter, account: Account, start: date, end: date):
     failures: list[str] = []
     try:
         holdings = adapter.get_holdings(account.account_seq)
-    except Exception:
+    except Exception as exc:
         holdings = None
-        failures.append("holdings retrieval failed")
+        failures.append(f"holdings retrieval failed: {format_api_failure(exc)}")
 
     buying_power: list[BuyingPower] = []
     for currency in ("KRW", "USD"):
         try:
             buying_power.append(adapter.get_buying_power(account.account_seq, currency))
-        except Exception:
-            failures.append(f"buying-power retrieval failed for {currency}")
+        except Exception as exc:
+            failures.append(
+                f"buying-power retrieval failed for {currency}: {format_api_failure(exc)}"
+            )
 
     order_results: list[Orders] = []
     missing_statuses: list[str] = []
@@ -433,11 +465,104 @@ def _fetch_portfolio(adapter, account: Account, start: date, end: date):
                     to_date=end,
                 )
             )
-        except Exception:
+        except Exception as exc:
             missing_statuses.append(status)
-            failures.append(f"{status.lower()} order-history retrieval failed")
+            failures.append(
+                f"{status.lower()} order-history retrieval failed: {format_api_failure(exc)}"
+            )
     orders = _combine_orders(order_results, missing_statuses)
-    return holdings, tuple(buying_power), orders, failures
+
+    try:
+        transactions = adapter.get_transactions(account.account_seq)
+    except Exception as exc:
+        transactions = None
+        failures.append(f"transactions retrieval failed: {format_api_failure(exc)}")
+
+    try:
+        exchange_rate = adapter.get_exchange_rate("USD", "KRW")
+    except Exception as exc:
+        exchange_rate = None
+        failures.append(f"exchange-rate retrieval failed: {format_api_failure(exc)}")
+    return holdings, tuple(buying_power), orders, transactions, exchange_rate, failures
+
+
+def _market_symbols(holdings: Holdings | None, selected_symbols: list[str], limit: int) -> list[str]:
+    available = holdings.holdings if holdings else ()
+    candidates = selected_symbols or [row.symbol for row in available]
+    output = []
+    for candidate in candidates:
+        symbol = candidate if isinstance(candidate, str) else None
+        matching = next(
+            (
+                row for row in available
+                if row.symbol.strip().upper() == (symbol or "").strip().upper()
+                or map_market_symbol(row.symbol, row.market_country, row.exchange)
+                == (symbol or "").strip().upper()
+            ),
+            None,
+        )
+        if matching and matching.market_country == "KR" and re.fullmatch(r"[0-9]{6}", matching.symbol):
+            mapped = matching.symbol
+        else:
+            mapped = (
+                map_market_symbol(matching.symbol, matching.market_country, matching.exchange)
+                if matching else None
+            )
+        if mapped is None and symbol:
+            korean = re.fullmatch(r"([0-9]{6})\.(KS|KQ)", symbol.upper())
+            if korean:
+                mapped = korean.group(1)
+        if mapped is None and symbol:
+            mapped = map_market_symbol(symbol, "US", None)
+        if mapped is None and symbol:
+            mapped_pair = _watchlist_symbol(symbol.upper())
+            mapped = mapped_pair[0] if mapped_pair else None
+        if mapped and mapped not in output:
+            output.append(mapped)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _fetch_technical_analysis(adapter, symbols: list[str]):
+    if not symbols:
+        return (), [], []
+    failures: list[str] = []
+    quotes = {}
+    try:
+        quotes = {row.symbol: row for row in adapter.get_prices(symbols)}
+    except Exception as exc:
+        failures.append(f"market-price retrieval failed: {format_api_failure(exc)}")
+    snapshots: list[TechnicalSnapshot] = []
+    sources: list[SourceReport] = []
+    for symbol in symbols:
+        page = None
+        try:
+            page = adapter.get_candles(symbol, interval="1d", count=200, adjusted=True)
+        except Exception as exc:
+            failures.append(f"daily-candle retrieval failed for {symbol}: {format_api_failure(exc)}")
+        quote = quotes.get(symbol)
+        snapshots.append(analyze_daily_candles(symbol, page, quote))
+        sources.append(
+            SourceReport(
+                source=f"Toss market data ({symbol})",
+                available=quote is not None or page is not None,
+                retrieved_at=max(
+                    (value for value in (
+                        quote.retrieved_at if quote else None,
+                        page.retrieved_at if page else None,
+                    ) if value is not None),
+                    default=None,
+                ),
+                as_of=(quote.timestamp if quote and quote.timestamp else max((row.timestamp for row in page.candles), default=None) if page else None),
+                coverage_warnings=(
+                    ["가격·캔들 응답의 기준 시각은 각 제공 시각입니다."]
+                    + (["현재가를 받지 못했습니다."] if quote is None else [])
+                    + (["일봉 캔들을 받지 못했습니다."] if page is None or not page.candles else [])
+                ),
+            )
+        )
+    return tuple(snapshots), sources, failures
 
 
 def _watchlist_symbol(symbol: str) -> tuple[str, str] | None:
@@ -534,10 +659,132 @@ def _trim_analyst_section(value: str) -> str:
     return f"{value[:head]}\n[…중략…]\n{value[-tail:]}"
 
 
+def _portfolio_decision_context(holdings: Holdings | None) -> PortfolioContext | None:
+    """Project known positions into the graph without carrying broker/account data."""
+    if holdings is None:
+        return None
+    positions = []
+    for holding in holdings.holdings:
+        ticker = map_market_symbol(
+            holding.symbol, holding.market_country, holding.exchange
+        )
+        if ticker is None or not holding.quantity.is_finite():
+            continue
+        quantity = float(holding.quantity)
+        if not math.isfinite(quantity):
+            continue
+        average_price = holding.average_purchase_price
+        average_value = float(average_price) if average_price is not None and average_price.is_finite() else None
+        positions.append(
+            Position(
+                ticker=ticker,
+                quantity=quantity,
+                average_price=average_value if average_value is None or math.isfinite(average_value) else None,
+                currency=holding.currency,
+            )
+        )
+    # Toss buying power is not an actual cash balance, so cash is deliberately unknown.
+    return PortfolioContext(cash=None, currency=None, positions=positions)
+
+
 def _make_scenario_workflow(
-    max_symbols: int, horizons: tuple[HorizonSpec, ...] = DEFAULT_HORIZONS
-) -> PortfolioScenarioWorkflow:
+    max_symbols: int,
+    horizons: tuple[HorizonSpec, ...] = DEFAULT_HORIZONS,
+    *,
+    full_workflow: bool = False,
+    portfolio_context: PortfolioContext | None = None,
+) -> tuple[PortfolioScenarioWorkflow, list[TradingDecisionResult]]:
     from langgraph.graph import END, START, StateGraph
+
+    from tradingagents.default_config import DEFAULT_CONFIG
+
+    if full_workflow:
+        from tradingagents.agents.rating import run_rating
+        from tradingagents.dataflows.config import run_config
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+        selected_analysts = ("market", "social", "news", "fundamentals")
+        graph_config = copy.deepcopy(DEFAULT_CONFIG)
+        graph_config["max_tool_rounds"] = _portfolio_tool_round_limit(
+            graph_config["max_tool_rounds"], _SYMBOL_RESEARCH_STEP_LIMIT, len(selected_analysts)
+        )
+        graph = TradingAgentsGraph(
+            selected_analysts=selected_analysts,
+            config=graph_config,
+        )
+        # Portfolio reports must not read or write the per-symbol decision memory.
+        full_graph = graph.graph_setup.setup_graph(selected_analysts, memory_node=None).compile()
+        decisions: list[TradingDecisionResult] = []
+
+        def analyze_full_workflow(research_input) -> str:
+            ticker = research_input.symbol
+            trade_date = _today_kst().isoformat()
+            initial_state = graph.create_run_state(
+                ticker,
+                trade_date,
+                asset_type="stock",
+                portfolio=portfolio_context,
+            )
+            with run_config(graph.config):
+                state = full_graph.invoke(
+                    initial_state,
+                    config={"recursion_limit": graph.config["max_recur_limit"]},
+                )
+            reports = []
+            for title, field in (
+                ("Market research", "market_report"),
+                ("Sentiment research", "sentiment_report"),
+                ("News research", "news_report"),
+                ("Fundamentals research", "fundamentals_report"),
+            ):
+                value = state.get(field)
+                if isinstance(value, str) and value.strip():
+                    reports.append(f"## {title}\n{_trim_analyst_section(value.strip())}")
+            if not reports:
+                raise RuntimeError("Full TradingAgents research was unavailable.")
+
+            risk_state = state.get("risk_debate_state") or {}
+            risk_debate = risk_state.get("history") or "\n\n".join(
+                value
+                for key in (
+                    "aggressive_history",
+                    "conservative_history",
+                    "neutral_history",
+                )
+                if isinstance((value := risk_state.get(key)), str) and value.strip()
+            )
+            trader_plan = state.get("trader_investment_plan")
+            final_decision = state.get("final_trade_decision")
+            if not all(
+                isinstance(value, str) and value.strip()
+                for value in (trader_plan, risk_debate, final_decision)
+            ):
+                raise RuntimeError("Trader, Risk, or final decision output was unavailable.")
+            decisions.append(
+                TradingDecisionResult(
+                    symbol=ticker,
+                    trader_plan=sanitize_portfolio_text(
+                        trader_plan, limit=5000
+                    ),
+                    risk_debate=sanitize_portfolio_text(risk_debate, limit=7000),
+                    final_decision=sanitize_portfolio_text(
+                        final_decision, limit=5000
+                    ),
+                    rating=run_rating(state),
+                )
+            )
+            return "\n\n".join(reports)
+
+        workflow = PortfolioScenarioWorkflow(
+            analyze_full_workflow,
+            graph.quick_thinking_llm,
+            ScenarioConfig(
+                max_holdings=max_symbols,
+                max_symbol_researches=max_symbols,
+                horizons=horizons,
+            ),
+        )
+        return workflow, decisions
 
     from tradingagents.agents import (
         create_fundamentals_analyst,
@@ -545,7 +792,6 @@ def _make_scenario_workflow(
         create_news_analyst,
     )
     from tradingagents.agents.state import AgentState
-    from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.analyst_execution import build_analyst_execution_plan
     from tradingagents.graph.setup import _analyst_graph
     from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -561,9 +807,8 @@ def _make_scenario_workflow(
         "fundamentals": create_fundamentals_analyst,
     }
     # Keep the total number of tool/agent steps below the portfolio symbol cap.
-    max_tool_rounds = min(
-        graph.config["max_tool_rounds"],
-        max(1, (_SYMBOL_RESEARCH_STEP_LIMIT // len(plan.specs) - 1) // 2),
+    max_tool_rounds = _portfolio_tool_round_limit(
+        graph.config["max_tool_rounds"], _SYMBOL_RESEARCH_STEP_LIMIT, len(plan.specs)
     )
     research = StateGraph(AgentState)
     for index, spec in enumerate(plan.specs):
@@ -579,7 +824,7 @@ def _make_scenario_workflow(
 
     def analyze_symbol(research_input) -> str:
         ticker = research_input.symbol
-        trade_date = _now().date().isoformat()
+        trade_date = _today_kst().isoformat()
         instrument_context = graph.resolve_instrument_context(ticker, "stock")
         initial_state = graph.propagator.create_initial_state(
             ticker,
@@ -605,14 +850,17 @@ def _make_scenario_workflow(
             raise RuntimeError("Market, news, and fundamentals research were unavailable.")
         return "\n\n".join(reports)
 
-    return PortfolioScenarioWorkflow(
-        analyze_symbol,
-        graph.quick_thinking_llm,
-        ScenarioConfig(
-            max_holdings=max_symbols,
-            max_symbol_researches=max_symbols,
-            horizons=horizons,
+    return (
+        PortfolioScenarioWorkflow(
+            analyze_symbol,
+            graph.quick_thinking_llm,
+            ScenarioConfig(
+                max_holdings=max_symbols,
+                max_symbol_researches=max_symbols,
+                horizons=horizons,
+            ),
         ),
+        [],
     )
 
 
@@ -622,6 +870,8 @@ def _run_scenarios(
     max_symbols: int,
     selected_symbols: list[str],
     horizons: tuple[HorizonSpec, ...] = DEFAULT_HORIZONS,
+    *,
+    full_workflow: bool = False,
 ) -> tuple[PortfolioScenarioReport | None, list[str]]:
     if holdings is None and not selected_symbols:
         return None, []
@@ -630,15 +880,20 @@ def _run_scenarios(
     )
     if not target_holdings.holdings and not watchlist_symbols:
         return None, omissions
-    workflow = _make_scenario_workflow(max_symbols, horizons)
-    return (
-        workflow.invoke(
-            target_holdings,
-            portfolio_analysis=analytics,
-            watchlist_symbols=watchlist_symbols,
-        ),
-        omissions,
+    workflow, decisions = _make_scenario_workflow(
+        max_symbols,
+        horizons,
+        full_workflow=full_workflow,
+        portfolio_context=_portfolio_decision_context(holdings),
     )
+    report = workflow.invoke(
+        target_holdings,
+        portfolio_analysis=analytics,
+        watchlist_symbols=watchlist_symbols,
+    )
+    if decisions:
+        report = replace(report, trading_decisions=tuple(decisions))
+    return report, omissions
 
 
 @portfolio_app.command("live")
@@ -668,19 +923,28 @@ def live(
             "--max-symbols",
             min=1,
             max=_MAX_SYMBOLS,
-            help=f"Maximum number of symbols sent to market research and scenario analysis (1-{_MAX_SYMBOLS}).",
+            help=f"Maximum number of symbols sent to research and analysis (1-{_MAX_SYMBOLS}).",
         ),
     ] = _MAX_SYMBOLS,
     scenarios: Annotated[
         bool,
         typer.Option("--scenarios/--no-scenarios", help="Run per-symbol TradingAgents research and portfolio scenarios."),
     ] = True,
+    full_workflow: Annotated[
+        bool,
+        typer.Option(
+            "--full-workflow",
+            help="Include Bull/Bear debate, Trader, Risk and Portfolio Manager decisions; increases LLM usage.",
+        ),
+    ] = False,
     output_dir: Annotated[
         Path,
         typer.Option("--output-dir", help="Report directory (default: ~/.tradingagents/portfolio)."),
     ] = _OUTPUT_DIR,
 ) -> None:
     """Query Toss portfolio data after an explicit operator read-only acknowledgement."""
+    if full_workflow and not scenarios:
+        raise typer.BadParameter("--full-workflow requires --scenarios.")
     if os.environ.get("TOSS_BROKER_READ_ONLY_VERIFIED") != _ACK_VALUE:
         raise typer.BadParameter(
             "Live mode requires TOSS_BROKER_READ_ONLY_VERIFIED=I_ACKNOWLEDGE_READ_ONLY. "
@@ -703,8 +967,12 @@ def live(
         adapter = TossPortfolioAdapter(client_id, client_secret)
         try:
             accounts = adapter.get_accounts()
-        except Exception:
-            typer.echo("Account-list retrieval failed; no portfolio report was written.", err=True)
+        except Exception as exc:
+            typer.echo(
+                "Account-list retrieval failed "
+                f"({format_api_failure(exc)}); no portfolio report was written.",
+                err=True,
+            )
             raise typer.Exit(code=1) from None
         try:
             account = _select_account(accounts, account_ordinal)
@@ -712,12 +980,29 @@ def live(
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from None
 
-        holdings, buying_power, orders, failures = _fetch_portfolio(adapter, account, start, end)
+        (
+            holdings,
+            buying_power,
+            orders,
+            transactions,
+            exchange_rate,
+            failures,
+        ) = _fetch_portfolio(adapter, account, start, end)
         now = _now()
+        fx_rate = None
+        if exchange_rate is not None:
+            with localcontext() as context:
+                context.prec = 28
+                fx_rate = Decimal(1) / exchange_rate.mid_rate
         analytics = analyze_portfolio(
             holdings,
             buying_power,
             orders,
+            transactions,
+            fx_rate=fx_rate,
+            fx_timestamp=exchange_rate.valid_from if exchange_rate else None,
+            fx_valid_until=exchange_rate.valid_until if exchange_rate else None,
+            fx_retrieved_at=exchange_rate.retrieved_at if exchange_rate else None,
             as_of=now,
             stale_after=timedelta(hours=24),
         )
@@ -731,12 +1016,30 @@ def live(
                     max_symbols,
                     selected_symbols,
                     horizons,
+                    full_workflow=full_workflow,
                 )
                 omissions.extend(scenario_omissions)
-            except Exception:
-                failures.append("scenario analysis failed")
+            except Exception as exc:
+                failures.append(f"scenario analysis failed: {format_api_failure(exc)}")
         if scenario_report is not None and not selected_symbols:
             selected_symbols = [row.symbol for row in scenario_report.symbol_research]
+        market_symbols = _market_symbols(holdings, selected_symbols, max_symbols)
+        technical_analysis, market_sources, market_failures = _fetch_technical_analysis(
+            adapter, market_symbols
+        )
+        failures.extend(market_failures)
+        snapshot_comparison: SnapshotComparison | None = None
+        if holdings is not None and len(buying_power) == 2:
+            try:
+                account_ordinal_selected = accounts.accounts.index(account) + 1
+                snapshot_comparison = append_portfolio_snapshot(
+                    holdings,
+                    buying_power,
+                    account_ordinal=account_ordinal_selected,
+                    captured_at=now,
+                )
+            except (OSError, ValueError):
+                failures.append("local portfolio snapshot could not be saved.")
         report = build_portfolio_report(
             mode="live",
             generated_at=now,
@@ -750,12 +1053,21 @@ def live(
             analytics=analytics,
             holdings=holdings,
             scenarios=scenario_report,
+            technical_analysis=technical_analysis,
+            snapshot_comparison=snapshot_comparison,
             source_failures=failures,
             omissions=omissions,
             caveats=[
                 "브로커 어댑터는 조회용 HTTP 요청만 보냅니다. API 키 단위 읽기 전용 권한을 보장하지 않습니다.",
                 "금융 분석 중 LangSmith/LangChain 원격 tracing을 비활성화했습니다.",
                 "주문 요약은 조회된 기록이며 체결 원장이나 실현 손익으로 해석할 수 없습니다.",
+                *(
+                    [
+                        "전체 TradingAgents 결정 그래프를 종목별로 실행했습니다. Trader·Risk·Portfolio Manager 결과는 분석 제안이며 주문을 생성하거나 실행하지 않습니다."
+                    ]
+                    if full_workflow
+                    else []
+                ),
             ],
             extra_sources=[
                 SourceReport(
@@ -764,7 +1076,8 @@ def live(
                     retrieved_at=accounts.retrieved_at,
                     as_of=None,
                     coverage_warnings=list(accounts.coverage_warnings),
-                )
+                ),
+                *market_sources,
             ],
         )
     _finish_report(report, output_dir)

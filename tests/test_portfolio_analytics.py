@@ -2,7 +2,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from tradingagents.portfolio.analytics import analyze_portfolio, map_market_symbol
-from tradingagents.portfolio.models import BuyingPower, Holding, Holdings, Order, Orders
+from tradingagents.portfolio.models import (
+    BuyingPower,
+    Holding,
+    Holdings,
+    Order,
+    Orders,
+    Transaction,
+    Transactions,
+)
 
 NOW = datetime(2026, 11, 9, 3, 0, tzinfo=UTC)
 
@@ -155,6 +163,7 @@ def test_decimal_values_weights_concentration_and_fx_are_currency_separated():
     assert result.account_wide_coverage == "partial"
     assert result.coverage_warnings == (
         "holdings: Toss holdings cover KR and US stocks; overseas options and bonds are excluded.",
+        "exchange_rate: Toss mid-market reference rate is informational and may differ from the execution rate.",
     )
     assert kr.security_weight == Decimal("1")
     assert kr.currency_portfolio_weight == Decimal("12.50625") / Decimal("13.75625")
@@ -178,6 +187,70 @@ def test_decimal_values_weights_concentration_and_fx_are_currency_separated():
     assert result.converted_totals.profit_loss_total == Decimal("3.5109421875")
     assert result.converted_totals.buying_power_total == Decimal("1.4909375")
     assert result.converted_totals.portfolio_value_total == Decimal("20.0103171875")
+
+
+def test_fx_validity_window_controls_conversion_independently_of_position_freshness():
+    holdings = Holdings(
+        (
+            _holding("005930", market_country="KR", exchange="KRX", currency="KRW", market_value="1300", purchase_amount="1000", profit_loss="300"),
+            _holding("SYNUS", currency="USD", market_value="1", purchase_amount="1", profit_loss="0"),
+        ),
+        NOW,
+    )
+    buying_power = (_buying_power("KRW", "0"), _buying_power("USD", "0"))
+    fresh = analyze_portfolio(
+        holdings,
+        buying_power,
+        fx_rate=Decimal("0.0007692307692307692307692307692"),
+        fx_timestamp=NOW - timedelta(seconds=30),
+        fx_valid_until=NOW + timedelta(seconds=30),
+        as_of=NOW,
+        stale_after=timedelta(hours=24),
+    )
+    expired = analyze_portfolio(
+        holdings,
+        buying_power,
+        fx_rate=Decimal("0.0007692307692307692307692307692"),
+        fx_timestamp=NOW - timedelta(minutes=2),
+        fx_valid_until=NOW,
+        as_of=NOW,
+        stale_after=timedelta(hours=24),
+    )
+
+    assert fresh.fx is not None and fresh.fx.applied
+    assert fresh.fx.valid_until == NOW + timedelta(seconds=30)
+    assert fresh.converted_totals is not None
+    assert expired.fx is not None and expired.fx.stale is True
+    assert not expired.fx.applied
+    assert expired.converted_totals is None
+
+
+def test_transaction_summary_counts_types_asset_classes_and_partial_pages():
+    transactions = Transactions(
+        (
+            Transaction("BUY", "OPTION", True, False),
+            Transaction("BUY", "BOND", False, False),
+            Transaction("DEPOSIT", None, True, True),
+        ),
+        NOW,
+        has_more=True,
+        coverage_warnings=("Transaction summary only includes returned records.",),
+    )
+
+    result = analyze_portfolio(transactions=transactions)
+
+    assert result.transactions is not None
+    assert result.transactions.count == 3
+    assert {row.key: row.count for row in result.transactions.by_type} == {"BUY": 2, "DEPOSIT": 1}
+    assert {row.key: row.count for row in result.transactions.by_asset_class} == {
+        "BOND": 1,
+        "CASH_OR_UNCLASSIFIED": 1,
+        "OPTION": 1,
+    }
+    assert result.transactions.settled_count == 2
+    assert result.transactions.unsettled_count == 1
+    assert result.transactions.cancellation_count == 1
+    assert result.transactions.has_more
 
 
 def test_missing_values_and_partial_coverage_never_become_zero_or_complete_weights():
@@ -246,6 +319,22 @@ def test_absent_inputs_and_partial_fx_keep_values_unknown_and_skip_conversion():
     assert _currency(partial_cash, "KRW").buying_power_total is None
     assert partial_cash.positions[0].currency_portfolio_weight is None
     assert any("No buying-power input was supplied for KRW" in item for item in partial_cash.unknowns)
+
+
+def test_currency_with_no_returned_positions_has_zero_represented_totals():
+    result = analyze_portfolio(
+        Holdings((_holding(currency="USD", market_value="10", purchase_amount="8"),), NOW),
+        (_buying_power("KRW", "0"), _buying_power("USD", "0")),
+    )
+
+    krw = _currency(result, "KRW")
+    assert krw.position_count == 0
+    assert krw.market_value_total == Decimal(0)
+    assert krw.purchase_amount_total == Decimal(0)
+    assert krw.profit_loss_total == Decimal(0)
+    assert krw.profit_loss_after_cost_total == Decimal(0)
+    assert krw.total_value_with_buying_power == Decimal(0)
+    assert krw.represented_scope_complete
 
 
 def test_stale_positions_and_fx_are_retained_but_excluded_from_totals():

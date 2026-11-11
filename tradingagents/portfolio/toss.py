@@ -12,14 +12,27 @@ from urllib.parse import urlsplit
 
 import requests
 
+from tradingagents.api_diagnostics import (
+    APIFailure,
+    classify_api_failure,
+    classify_http_status,
+)
 from tradingagents.portfolio.models import (
     Account,
     Accounts,
     BuyingPower,
+    Candle,
+    CandlePage,
+    CurrencyAmounts,
+    ExchangeRate,
     Holding,
     Holdings,
+    HoldingsSummary,
+    MarketPrice,
     Order,
     Orders,
+    Transaction,
+    Transactions,
 )
 
 _HOST = "https://openapi.tossinvest.com"
@@ -27,17 +40,20 @@ _TOKEN_PATH = "/oauth2/token"
 _ALLOWED_READ_PATHS = {
     "/api/v1/accounts",
     "/api/v1/holdings",
+    "/api/v1/prices",
+    "/api/v1/candles",
     "/api/v1/orders",
     "/api/v1/buying-power",
+    "/api/v1/exchange-rate",
+    "/api/v1/transactions",
 }
 _ORDER_DETAIL_PATH = re.compile(r"^/api/v1/orders/[A-Za-z0-9_-]{1,128}$")
 _SYMBOL = re.compile(r"^[A-Za-z0-9.-]{1,32}$")
-_ERROR_CODE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _TIMEOUT = (3.05, 10.0)
 _MAX_RETRIES = 2
 _MAX_PAGES = 3
+_MAX_TRANSACTION_PAGES = 10
 _PAGE_SIZE = 100
-_MAX_RATE_LIMIT_WAIT = 2.0
 _EXPIRY_SKEW_SECONDS = 30
 
 _ACCOUNT_WARNING = "Only active brokerage accounts are returned by Toss Securities."
@@ -47,19 +63,33 @@ _HOLDINGS_WARNING = (
 _ORDERS_WARNING = (
     "Toss order history excludes order types unsupported by its Open API."
 )
+_TRANSACTIONS_WARNING = (
+    "Transaction summaries cover returned records only; transaction amounts are not summed."
+)
 
 
 class TossAPIError(RuntimeError):
     """A sanitized Toss API error that never includes response bodies or credentials."""
 
-    def __init__(self, message: str, *, status: int | None = None, code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        failure: APIFailure | None = None,
+    ):
         self.status = status
-        self.code = code
+        self.failure = failure or (
+            classify_http_status(status)
+            if status is not None
+            else APIFailure("provider_response", False)
+        )
+        self.category = self.failure.category
+        self.retryable = self.failure.retryable
         details = []
         if status is not None:
             details.append(f"HTTP {status}")
-        if code is not None:
-            details.append(f"code={code}")
+        details.append(f"{self.category}; retryable={'yes' if self.retryable else 'no'}")
         suffix = f" ({', '.join(details)})" if details else ""
         super().__init__(f"Toss API {message}{suffix}.")
 
@@ -111,12 +141,69 @@ class TossPortfolioAdapter:
             raise TossAPIError("returned an invalid holdings response", status=response.status_code)
         retrieved_at = _retrieved_at(response)
         holdings = tuple(_holding(item, retrieved_at) for item in result["items"])
+        summary = _holdings_summary(result)
         return Holdings(
             holdings=holdings,
             retrieved_at=retrieved_at,
             as_of=None,
             coverage_warnings=(_HOLDINGS_WARNING,),
+            summary=summary,
         )
+
+    def get_prices(self, symbols: tuple[str, ...] | list[str]) -> tuple[MarketPrice, ...]:
+        if not 1 <= len(symbols) <= 200:
+            raise ValueError("symbols must contain between 1 and 200 items.")
+        if any(not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol) for symbol in symbols):
+            raise ValueError("symbols must contain only letters, digits, '.', or '-'.")
+        if len(set(symbols)) != len(symbols):
+            raise ValueError("symbols must be unique.")
+        response = self._get("/api/v1/prices", params={"symbols": ",".join(symbols)})
+        result = self._result(response)
+        if not isinstance(result, list):
+            raise TossAPIError("returned an invalid prices response", status=response.status_code)
+        retrieved_at = _retrieved_at(response)
+        prices = tuple(_market_price(item, retrieved_at) for item in result)
+        if len({item.symbol for item in prices}) != len(prices):
+            raise TossAPIError("returned duplicate market prices", status=response.status_code)
+        return prices
+
+    def get_candles(
+        self,
+        symbol: str,
+        *,
+        interval: str = "1d",
+        count: int = 200,
+        before: datetime | None = None,
+        adjusted: bool = True,
+    ) -> CandlePage:
+        if not _SYMBOL.fullmatch(symbol):
+            raise ValueError("symbol must contain only letters, digits, '.', or '-'.")
+        if interval not in {"1m", "1d"}:
+            raise ValueError("interval must be '1m' or '1d'.")
+        if isinstance(count, bool) or not isinstance(count, int) or not 1 <= count <= 200:
+            raise ValueError("count must be an integer between 1 and 200.")
+        if before is not None and (not isinstance(before, datetime) or before.tzinfo is None):
+            raise ValueError("before must be a timezone-aware datetime.")
+        if not isinstance(adjusted, bool):
+            raise ValueError("adjusted must be a boolean.")
+        params: dict[str, str | int | bool] = {
+            "interval": interval,
+            "count": count,
+            "adjusted": adjusted,
+        }
+        if before is not None:
+            params["before"] = before.isoformat()
+        response = self._get(
+            "/api/v1/candles", params={"symbol": symbol, **params}
+        )
+        result = self._result(response)
+        if not isinstance(result, dict) or not isinstance(result.get("candles"), list):
+            raise TossAPIError("returned an invalid candles response", status=response.status_code)
+        candles = tuple(_candle(item) for item in result["candles"])
+        if len(candles) > count or len({row.timestamp for row in candles}) != len(candles):
+            raise TossAPIError("returned invalid candle pagination data", status=response.status_code)
+        next_before = _datetime_optional(result.get("nextBefore"), "nextBefore")
+        return CandlePage(symbol, interval, candles, _retrieved_at(response), next_before)
 
     def get_orders(
         self,
@@ -206,12 +293,104 @@ class TossPortfolioAdapter:
             retrieved_at=_retrieved_at(response),
         )
 
+    def get_exchange_rate(
+        self, base_currency: str = "USD", quote_currency: str = "KRW"
+    ) -> ExchangeRate:
+        if (base_currency, quote_currency) not in {("USD", "KRW"), ("KRW", "USD")}:
+            raise ValueError("Only the Toss KRW/USD currency pair is supported.")
+        response = self._get(
+            "/api/v1/exchange-rate",
+            params={"baseCurrency": base_currency, "quoteCurrency": quote_currency},
+        )
+        result = self._result(response)
+        if (
+            not isinstance(result, dict)
+            or result.get("baseCurrency") != base_currency
+            or result.get("quoteCurrency") != quote_currency
+        ):
+            raise TossAPIError("returned an invalid exchange-rate response", status=response.status_code)
+        rate = _decimal(result.get("rate"), "rate")
+        mid_rate = _decimal(result.get("midRate"), "midRate")
+        valid_from = _datetime_optional(result.get("validFrom"), "validFrom")
+        valid_until = _datetime_optional(result.get("validUntil"), "validUntil")
+        if (
+            rate <= 0
+            or mid_rate <= 0
+            or valid_from is None
+            or valid_until is None
+            or valid_from >= valid_until
+        ):
+            raise TossAPIError("returned an invalid exchange-rate response", status=response.status_code)
+        return ExchangeRate(
+            base_currency=base_currency,
+            quote_currency=quote_currency,
+            rate=rate,
+            mid_rate=mid_rate,
+            valid_from=valid_from,
+            valid_until=valid_until,
+            retrieved_at=_retrieved_at(response),
+        )
+
+    def get_transactions(
+        self,
+        account_seq: int,
+        *,
+        from_date: date | str | None = None,
+        to_date: date | str | None = None,
+    ) -> Transactions:
+        query: dict[str, str | int] = {"limit": _PAGE_SIZE}
+        if from_date is not None:
+            query["from"] = _date_string(from_date)
+        if to_date is not None:
+            query["to"] = _date_string(to_date)
+        if "from" in query and "to" in query and query["from"] > query["to"]:
+            raise ValueError("transaction start date must be on or before its end date.")
+
+        transactions: list[Transaction] = []
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        retrieved_at: datetime | None = None
+        has_more = False
+        warnings = [_TRANSACTIONS_WARNING]
+        for page in range(_MAX_TRANSACTION_PAGES):
+            params = dict(query)
+            if cursor is not None:
+                params["cursor"] = cursor
+            response = self._get(
+                "/api/v1/transactions", account_seq=account_seq, params=params
+            )
+            result = self._result(response)
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("transactions"), list)
+                or not isinstance(result.get("hasNext"), bool)
+            ):
+                raise TossAPIError("returned an invalid transactions response", status=response.status_code)
+            retrieved_at = _retrieved_at(response)
+            transactions.extend(
+                _transaction(item) for item in result["transactions"]
+            )
+            has_more = result["hasNext"]
+            next_cursor = result.get("nextCursor")
+            if not has_more:
+                break
+            if not isinstance(next_cursor, str) or not next_cursor or len(next_cursor) > 4096:
+                raise TossAPIError("returned invalid transaction pagination data", status=response.status_code)
+            if next_cursor in seen_cursors:
+                raise TossAPIError("returned repeated transaction pagination data", status=response.status_code)
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+            if page == _MAX_TRANSACTION_PAGES - 1:
+                warnings.append("Transaction history is truncated at the configured ten-page limit.")
+
+        return Transactions(tuple(transactions), retrieved_at, has_more, tuple(warnings))
+
     def _get(
         self,
         path: str,
         *,
         account_seq: int | None = None,
-        params: dict[str, str | int] | None = None,
+        params: dict[str, str | int | bool] | None = None,
     ) -> requests.Response:
         url = f"{_HOST}{path}"
         _validate_business_request("GET", url)
@@ -221,7 +400,6 @@ class TossPortfolioAdapter:
                 raise ValueError("account_seq must be a positive integer.")
             headers["X-Tossinvest-Account"] = str(account_seq)
 
-        refreshed = False
         retries = 0
         while True:
             headers["Authorization"] = f"Bearer {self._get_token()}"
@@ -233,39 +411,25 @@ class TossPortfolioAdapter:
                     timeout=_TIMEOUT,
                     allow_redirects=False,
                 )
-            except requests.Timeout:
-                if retries < _MAX_RETRIES:
+            except requests.RequestException as exc:
+                failure = classify_api_failure(exc)
+                if failure.retryable and retries < _MAX_RETRIES:
                     retries += 1
                     continue
-                raise TossAPIError("request timed out") from None
-            except requests.RequestException:
-                if retries < _MAX_RETRIES:
-                    retries += 1
-                    continue
-                raise TossAPIError("request failed") from None
+                message = "request timed out" if failure.category == "timeout" else "request failed"
+                raise TossAPIError(message, failure=failure) from None
 
             _validate_response_url(response, url)
             if 300 <= response.status_code < 400 or response.is_redirect:
                 raise TossAPIError("refused a redirect", status=response.status_code)
-            if response.status_code == 401 and not refreshed:
+            if response.status_code == 401:
                 self._access_token = None
                 self._token_expires_at = 0.0
-                refreshed = True
-                continue
-            if response.status_code == 429 and retries < _MAX_RETRIES:
-                wait = _retry_wait(response)
-                if wait is not None:
-                    retries += 1
-                    time.sleep(wait)
-                    continue
             if response.status_code >= 500 and retries < _MAX_RETRIES:
                 retries += 1
                 continue
             if not 200 <= response.status_code < 300:
-                raise _response_error(
-                    response,
-                    sensitive=(self._client_id, self._client_secret, self._access_token or ""),
-                )
+                raise _response_error(response)
             return response
 
     def _get_token(self) -> str:
@@ -273,25 +437,35 @@ class TossPortfolioAdapter:
             return self._access_token
         url = f"{_HOST}{_TOKEN_PATH}"
         _validate_auth_request("POST", url)
-        try:
-            response = self._session.post(
-                url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self._client_id,
-                    "client_secret": self._client_secret,
-                },
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-                timeout=_TIMEOUT,
-                allow_redirects=False,
-            )
-        except requests.RequestException:
-            raise TossAPIError("token request failed") from None
+        retries = 0
+        while True:
+            try:
+                response = self._session.post(
+                    url,
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=_TIMEOUT,
+                    allow_redirects=False,
+                )
+            except requests.RequestException as exc:
+                failure = classify_api_failure(exc)
+                if failure.retryable and retries < _MAX_RETRIES:
+                    retries += 1
+                    continue
+                raise TossAPIError("token request failed", failure=failure) from None
+            if response.status_code >= 500 and retries < _MAX_RETRIES:
+                retries += 1
+                continue
+            break
         _validate_response_url(response, url)
         if 300 <= response.status_code < 400 or response.is_redirect:
             raise TossAPIError("refused a token redirect", status=response.status_code)
         if not 200 <= response.status_code < 300:
-            raise _response_error(response, sensitive=(self._client_id, self._client_secret))
+            raise _response_error(response)
         try:
             payload = response.json()
             token = payload.get("access_token")
@@ -365,24 +539,9 @@ def _validate_response_url(response: requests.Response, request_url: str) -> Non
 
 
 def _response_error(
-    response: requests.Response, *, sensitive: tuple[str, ...] = ()
+    response: requests.Response,
 ) -> TossAPIError:
-    code: str | None = None
-    try:
-        error = response.json().get("error")
-        candidate = error.get("code") if isinstance(error, dict) else None
-        leaks_sensitive_value = isinstance(candidate, str) and any(
-            secret and (secret in candidate or candidate in secret) for secret in sensitive
-        )
-        if (
-            isinstance(candidate, str)
-            and _ERROR_CODE.fullmatch(candidate)
-            and not leaks_sensitive_value
-        ):
-            code = candidate
-    except (ValueError, requests.JSONDecodeError, AttributeError):
-        pass
-    return TossAPIError("request failed", status=response.status_code, code=code)
+    return TossAPIError("request failed", status=response.status_code)
 
 
 def _retrieved_at(response: requests.Response) -> datetime | None:
@@ -403,8 +562,17 @@ def _holding(item: Any, retrieved_at: datetime | None) -> Holding:
         raise TossAPIError("returned an invalid holding item")
     market_value = item.get("marketValue")
     profit_loss = item.get("profitLoss")
-    if not isinstance(market_value, dict) or not isinstance(profit_loss, dict):
+    daily_profit_loss = item.get("dailyProfitLoss")
+    cost = item.get("cost")
+    if (
+        not isinstance(market_value, dict)
+        or not isinstance(profit_loss, dict)
+        or (daily_profit_loss is not None and not isinstance(daily_profit_loss, dict))
+        or (cost is not None and not isinstance(cost, dict))
+    ):
         raise TossAPIError("returned an invalid holding item")
+    daily_profit_loss = daily_profit_loss or {}
+    cost = cost or {}
     return Holding(
         symbol=item["symbol"],
         name=_optional_string(item.get("name")),
@@ -426,6 +594,51 @@ def _holding(item: Any, retrieved_at: datetime | None) -> Holding:
             profit_loss.get("amountAfterCost"), "profitLoss.amountAfterCost"
         ),
         retrieved_at=retrieved_at,
+        profit_loss_rate=_decimal_optional(profit_loss.get("rate"), "profitLoss.rate"),
+        profit_loss_rate_after_cost=_decimal_optional(
+            profit_loss.get("rateAfterCost"), "profitLoss.rateAfterCost"
+        ),
+        daily_profit_loss=_decimal_optional(
+            daily_profit_loss.get("amount"), "dailyProfitLoss.amount"
+        ),
+        daily_profit_loss_rate=_decimal_optional(
+            daily_profit_loss.get("rate"), "dailyProfitLoss.rate"
+        ),
+        commission=_decimal_optional(cost.get("commission"), "cost.commission"),
+        tax=_decimal_optional(cost.get("tax"), "cost.tax"),
+    )
+
+
+def _holdings_summary(item: dict[str, Any]) -> HoldingsSummary:
+    market_value = item.get("marketValue")
+    profit_loss = item.get("profitLoss")
+    daily_profit_loss = item.get("dailyProfitLoss")
+    market_value = market_value if isinstance(market_value, dict) else {}
+    profit_loss = profit_loss if isinstance(profit_loss, dict) else {}
+    daily_profit_loss = daily_profit_loss if isinstance(daily_profit_loss, dict) else {}
+    return HoldingsSummary(
+        total_purchase_amount=_currency_amounts(item.get("totalPurchaseAmount")),
+        market_value=_currency_amounts(market_value.get("amount")),
+        market_value_after_cost=_currency_amounts(market_value.get("amountAfterCost")),
+        profit_loss=_currency_amounts(profit_loss.get("amount")),
+        profit_loss_after_cost=_currency_amounts(profit_loss.get("amountAfterCost")),
+        profit_loss_rate=_decimal_optional(profit_loss.get("rate"), "profitLoss.rate"),
+        profit_loss_rate_after_cost=_decimal_optional(
+            profit_loss.get("rateAfterCost"), "profitLoss.rateAfterCost"
+        ),
+        daily_profit_loss=_currency_amounts(daily_profit_loss.get("amount")),
+        daily_profit_loss_rate=_decimal_optional(
+            daily_profit_loss.get("rate"), "dailyProfitLoss.rate"
+        ),
+    )
+
+
+def _currency_amounts(value: Any) -> CurrencyAmounts:
+    if not isinstance(value, dict):
+        return CurrencyAmounts()
+    return CurrencyAmounts(
+        krw=_decimal_optional(value.get("krw"), "amount.krw"),
+        usd=_decimal_optional(value.get("usd"), "amount.usd"),
     )
 
 
@@ -456,6 +669,107 @@ def _order(item: Any, retrieved_at: datetime | None) -> Order:
         canceled_at=_datetime_optional(item.get("canceledAt"), "canceledAt"),
         filled_at=_datetime_optional(execution.get("filledAt"), "filledAt"),
         retrieved_at=retrieved_at,
+        commission=_decimal_optional(execution.get("commission"), "execution.commission"),
+        tax=_decimal_optional(execution.get("tax"), "execution.tax"),
+        settlement_date=_date_optional(execution.get("settlementDate"), "execution.settlementDate"),
+    )
+
+
+def _transaction(item: Any) -> Transaction:
+    if not isinstance(item, dict):
+        raise TossAPIError("returned an invalid transaction item")
+    transaction_type = item.get("transactionType")
+    asset_class = item.get("assetClass")
+    settled = item.get("settled")
+    is_cancellation = item.get("isCancellation")
+    if (
+        not isinstance(transaction_type, str)
+        or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,39}", transaction_type)
+        or (asset_class is not None and (
+            not isinstance(asset_class, str)
+            or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,39}", asset_class)
+        ))
+        or not isinstance(settled, bool)
+        or not isinstance(is_cancellation, bool)
+    ):
+        raise TossAPIError("returned an invalid transaction item")
+    transaction_time = _datetime_optional(item.get("transactionTime"), "transactionTime")
+    if transaction_time is not None and transaction_time.tzinfo is None:
+        raise TossAPIError("returned an invalid transaction timestamp")
+    return Transaction(
+        transaction_type=transaction_type,
+        asset_class=asset_class,
+        settled=settled,
+        is_cancellation=is_cancellation,
+        symbol=_optional_string(item.get("symbol")),
+        market_country=_optional_string(item.get("marketCountry")),
+        currency=_optional_string(item.get("currency")),
+        quantity=_decimal_optional(item.get("quantity"), "quantity"),
+        filled_price=_decimal_optional(item.get("filledPrice"), "filledPrice"),
+        amount=_decimal_optional(item.get("amount"), "amount"),
+        commission=_decimal_optional(item.get("commission"), "commission"),
+        tax=_decimal_optional(item.get("tax"), "tax"),
+        net_amount=_decimal_optional(item.get("netAmount"), "netAmount"),
+        exchange_rate=_decimal_optional(item.get("exchangeRate"), "exchangeRate"),
+        settlement_date=_date_optional(item.get("settlementDate"), "settlementDate"),
+        transaction_time=transaction_time,
+    )
+
+
+def _market_price(item: Any, retrieved_at: datetime | None) -> MarketPrice:
+    if not isinstance(item, dict):
+        raise TossAPIError("returned an invalid price item")
+    symbol = item.get("symbol")
+    currency = item.get("currency")
+    if (
+        not isinstance(symbol, str)
+        or not _SYMBOL.fullmatch(symbol)
+        or not isinstance(currency, str)
+        or currency not in {"KRW", "USD"}
+    ):
+        raise TossAPIError("returned an invalid price item")
+    timestamp = _datetime_optional(item.get("timestamp"), "timestamp")
+    if timestamp is not None and timestamp.tzinfo is None:
+        raise TossAPIError("returned an invalid price timestamp")
+    price = _decimal(item.get("lastPrice"), "lastPrice")
+    if price <= 0:
+        raise TossAPIError("returned an invalid price item")
+    return MarketPrice(
+        symbol=symbol,
+        currency=currency,
+        last_price=price,
+        timestamp=timestamp,
+        retrieved_at=retrieved_at,
+    )
+
+
+def _candle(item: Any) -> Candle:
+    if not isinstance(item, dict):
+        raise TossAPIError("returned an invalid candle item")
+    currency = item.get("currency")
+    timestamp = _datetime_optional(item.get("timestamp"), "timestamp")
+    if currency not in {"KRW", "USD"} or timestamp is None or timestamp.tzinfo is None:
+        raise TossAPIError("returned an invalid candle item")
+    open_price = _decimal(item.get("openPrice"), "openPrice")
+    high_price = _decimal(item.get("highPrice"), "highPrice")
+    low_price = _decimal(item.get("lowPrice"), "lowPrice")
+    close_price = _decimal(item.get("closePrice"), "closePrice")
+    volume = _decimal(item.get("volume"), "volume")
+    if (
+        min(open_price, high_price, low_price, close_price) <= 0
+        or volume < 0
+        or high_price < max(open_price, close_price, low_price)
+        or low_price > min(open_price, close_price, high_price)
+    ):
+        raise TossAPIError("returned an invalid candle item")
+    return Candle(
+        timestamp=timestamp,
+        open_price=open_price,
+        high_price=high_price,
+        low_price=low_price,
+        close_price=close_price,
+        volume=volume,
+        currency=currency,
     )
 
 
@@ -489,6 +803,17 @@ def _datetime_optional(value: Any, field: str) -> datetime | None:
         raise TossAPIError(f"returned an invalid timestamp field {field}") from None
 
 
+def _date_optional(value: Any, field: str) -> date | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TossAPIError(f"returned an invalid date field {field}")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise TossAPIError(f"returned an invalid date field {field}") from None
+
+
 def _date_string(value: date | str) -> str:
     if isinstance(value, datetime):
         value = value.date()
@@ -499,17 +824,7 @@ def _date_string(value: date | str) -> str:
             return date.fromisoformat(value).isoformat()
         except ValueError:
             pass
-    raise ValueError("order date filters must be ISO dates.")
-
-
-def _retry_wait(response: requests.Response) -> float | None:
-    value = response.headers.get("Retry-After")
-    if not isinstance(value, str) or not value.strip().isdigit():
-        return None
-    seconds = int(value.strip())
-    if seconds > _MAX_RATE_LIMIT_WAIT:
-        return None
-    return float(seconds)
+    raise ValueError("date filters must be ISO dates.")
 
 
 def _optional_string(value: Any) -> str | None:

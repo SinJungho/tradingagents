@@ -166,6 +166,14 @@ def build_instrument_context(
             " Treat it as a crypto asset rather than a company, and do not "
             "assume company fundamentals are available."
         )
+    elif not is_historical(trade_date) and str(identity.get("quote_type") or "").upper() in {
+        "ETF", "MUTUALFUND", "MUTUAL FUND"
+    }:
+        context += (
+            " Yahoo identifies this instrument as a fund, not an operating company. "
+            "Use fund-specific overview, operations, and holdings data; do not infer "
+            "company earnings or insider activity from blank corporate statements."
+        )
     return context
 
 

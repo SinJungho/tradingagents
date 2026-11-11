@@ -247,6 +247,8 @@ def test_partial_symbol_failure_keeps_success_and_marks_coverage():
     ]
     assert report.symbol_research[0].analysis == "Evidence from the successful synthetic company report."
     assert report.symbol_research[1].analysis is None
+    assert report.symbol_research[1].failure_category == "unknown"
+    assert report.symbol_research[1].retryable is False
     assert "private provider response" not in "\n".join(message.content for message in llm.messages)
 
 

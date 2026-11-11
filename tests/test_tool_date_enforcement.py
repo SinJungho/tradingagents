@@ -100,6 +100,10 @@ class _State(MessagesState):
 
 def _run(tool, args, module):
     """Call the tool through a ToolNode in a graph carrying the run's trade_date."""
+    return _invoke(tool, args, module)[-1].args
+
+
+def _invoke(tool, args, module):
     graph = StateGraph(_State)
     graph.add_node("tools", ToolNode([tool]))
     graph.add_edge(START, "tools")
@@ -110,13 +114,72 @@ def _run(tool, args, module):
             "trade_date": TRADE_DATE,
             "company_of_interest": "NVDA",
         })
-    return routed.call_args.args
+    return routed.call_args_list
 
 
 @pytest.mark.unit
 def test_statement_tool_with_omitted_date_uses_the_run_date():
     args = _run(tools.get_balance_sheet, {}, tools)
     assert args[-1] == TRADE_DATE  # #1331: an omitted date no longer means unfiltered
+
+
+@pytest.mark.unit
+def test_omitted_research_arguments_get_run_date_and_default_windows():
+    stock = _run(tools.get_stock_data, {}, tools)
+    assert stock == ("get_stock_data", "NVDA", "2025-08-14", TRADE_DATE)
+
+    news = _run(tools.get_news, {}, tools)
+    assert news == ("get_news", "NVDA", "2026-08-07", TRADE_DATE)
+
+    fundamentals = _run(tools.get_fundamentals, {}, tools)
+    assert fundamentals == ("get_fundamentals", "NVDA", TRADE_DATE)
+
+    global_news = _run(tools.get_global_news, {}, tools)
+    assert global_news == ("get_global_news", TRADE_DATE, None, None)
+
+    prediction = _run(tools.get_prediction_markets, {}, tools)
+    assert prediction == ("get_prediction_markets", "Fed rate cut", None, TRADE_DATE)
+
+
+@pytest.mark.unit
+def test_omitted_indicator_and_macro_names_use_supported_defaults():
+    indicator_calls = _invoke(tools.get_indicators, {}, tools)
+    assert [call.args[2] for call in indicator_calls] == [
+        "close_50_sma", "close_200_sma", "macdh", "rsi", "atr"
+    ]
+    assert all(call.args[3] == TRADE_DATE for call in indicator_calls)
+
+    macro_calls = _invoke(tools.get_macro_indicators, {}, tools)
+    assert [call.args[1] for call in macro_calls] == [
+        "cpi", "core_pce", "unemployment", "fed_funds_rate", "10y_treasury", "yield_curve"
+    ]
+    assert all(call.args[2] == TRADE_DATE for call in macro_calls)
+
+
+@pytest.mark.unit
+def test_verified_snapshot_defaults_to_the_run_date():
+    with mock.patch.object(tools, "build_verified_market_snapshot", return_value="snapshot") as snap:
+        _invoke(tools.get_verified_market_snapshot, {}, tools)
+    snap.assert_called_once_with("NVDA", TRADE_DATE, 30)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "tool,optional_fields",
+    [
+        (tools.get_stock_data, {"start_date", "end_date"}),
+        (tools.get_indicators, {"indicator", "curr_date"}),
+        (tools.get_verified_market_snapshot, {"curr_date"}),
+        (tools.get_fundamentals, {"curr_date"}),
+        (tools.get_news, {"start_date", "end_date"}),
+        (tools.get_global_news, {"curr_date"}),
+        (tools.get_macro_indicators, {"indicator", "curr_date"}),
+        (tools.get_prediction_markets, {"topic"}),
+    ],
+)
+def test_model_may_omit_safe_defaulted_research_inputs(tool, optional_fields):
+    schema = tool.tool_call_schema.model_json_schema()
+    assert optional_fields.isdisjoint(schema.get("required", []))
 
 
 @pytest.mark.unit
