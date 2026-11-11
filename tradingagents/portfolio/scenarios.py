@@ -177,6 +177,10 @@ class _ScenarioState(TypedDict, total=False):
 
 _MAX_RESEARCH_CHARS = 6000
 _MAX_NAME_CHARS = 160
+_SYNTHESIS_RETRY_INSTRUCTION = (
+    "이전 응답이 형식 검증에 실패했습니다. 원래 요청에서 지정한 JSON 형식만 다시 반환하세요. "
+    "설명이나 코드 블록은 추가하지 마세요."
+)
 _WATCH_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,31}$")
 _KNOWN_CURRENCIES = {"KRW", "USD"}
 _KNOWN_MARKETS = {"KR", "US"}
@@ -1046,7 +1050,12 @@ class PortfolioScenarioWorkflow:
         )
         # Deliberately invoke the model directly: this workflow provides no tools.
         response = self.scenario_llm.invoke(messages)
-        summary, horizons = _parse_synthesis(_extract_text(response), self.config)
+        try:
+            summary, horizons = _parse_synthesis(_extract_text(response), self.config)
+        except ValueError:
+            retry_messages = [*messages, HumanMessage(content=_SYNTHESIS_RETRY_INSTRUCTION)]
+            retry_response = self.scenario_llm.invoke(retry_messages)
+            summary, horizons = _parse_synthesis(_extract_text(retry_response), self.config)
         partial = (
             any(result.status != "analyzed" for result in research)
             or unmapped > 0

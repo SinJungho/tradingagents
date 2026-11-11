@@ -119,12 +119,17 @@ def _response(config=None, evidence="synthetic source supports the thesis"):
 class MockScenarioLLM:
     def __init__(self, response):
         self.response = response
+        self.responses = list(response) if isinstance(response, tuple) else None
         self.messages = None
+        self.calls = []
         self.tracing = None
 
     def invoke(self, messages):
         self.messages = messages
+        self.calls.append(messages)
         self.tracing = get_tracing_context()
+        if self.responses is not None:
+            return self.responses[len(self.calls) - 1]
         return self.response
 
     def bind_tools(self, *_args, **_kwargs):
@@ -479,3 +484,48 @@ def test_synthesis_rejects_missing_or_duplicate_horizons(names):
 
     with pytest.raises(ValueError, match="horizons do not match"):
         _parse_synthesis(_synthesis_with_names(names), ScenarioConfig())
+
+
+def test_synthesis_retries_once_after_invalid_response_without_echoing_it():
+    first_response = "synthetic malformed response: {not-json}"
+    llm = MockScenarioLLM((first_response, _response()))
+    research_calls = []
+    workflow = PortfolioScenarioWorkflow(
+        lambda item: research_calls.append(item.symbol) or "Synthetic evidence.", llm
+    )
+
+    report = workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+
+    assert report.summary == "Scenarios are conditional on the supplied evidence."
+    assert len(report.horizons) == 3
+    assert len(llm.calls) == 2
+    assert research_calls == ["SYNTH"]
+    retry_messages = llm.calls[1]
+    assert retry_messages[:-1] == llm.calls[0]
+    assert "형식 검증에 실패" in retry_messages[-1].content
+    assert first_response not in "\n".join(message.content for message in retry_messages)
+
+
+def test_synthesis_raises_after_one_invalid_response_retry():
+    first_response = "synthetic malformed response: {first}"
+    second_response = "synthetic malformed response: {second}"
+    llm = MockScenarioLLM((first_response, second_response))
+    workflow = PortfolioScenarioWorkflow(lambda _item: "Synthetic evidence.", llm)
+
+    with pytest.raises(ValueError):
+        workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+
+    assert len(llm.calls) == 2
+    retry_prompt = "\n".join(message.content for message in llm.calls[1])
+    assert first_response not in retry_prompt
+    assert second_response not in retry_prompt
+
+
+def test_synthesis_valid_first_response_does_not_retry():
+    llm = MockScenarioLLM(_response())
+    workflow = PortfolioScenarioWorkflow(lambda _item: "Synthetic evidence.", llm)
+
+    report = workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+
+    assert report.summary == "Scenarios are conditional on the supplied evidence."
+    assert len(llm.calls) == 1
