@@ -64,6 +64,7 @@ class VendorNotConfiguredError(VendorError, ValueError):
 # that write run reports drain this so the omission is visible beyond the logs.
 # ponytail: process-global list; use per-run context if runs ever share a process concurrently.
 _source_failures: list[tuple[str, BaseException]] = []
+_source_circuits: dict[str, BaseException] = {}
 _source_failures_lock = threading.Lock()
 
 
@@ -72,8 +73,19 @@ def record_source_failure(method: str, error: BaseException) -> None:
         _source_failures.append((method, error))
 
 
+def trip_source_circuit(method: str, error: BaseException) -> None:
+    with _source_failures_lock:
+        _source_circuits.setdefault(method, error)
+
+
+def source_circuit_error(method: str) -> BaseException | None:
+    with _source_failures_lock:
+        return _source_circuits.get(method)
+
+
 def drain_source_failures() -> list[tuple[str, BaseException]]:
     with _source_failures_lock:
         items = _source_failures[:]
         _source_failures.clear()
+        _source_circuits.clear()
     return items

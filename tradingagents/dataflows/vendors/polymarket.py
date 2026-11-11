@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 import requests
 
 from tradingagents.dataflows.date_window import is_historical
-from tradingagents.dataflows.errors import record_source_failure
+from tradingagents.dataflows.errors import (
+    record_source_failure,
+    source_circuit_error,
+    trip_source_circuit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +32,14 @@ REQUEST_TIMEOUT = 30
 
 # Default number of markets to return, ranked by traded volume.
 DEFAULT_LIMIT = 6
+
+
+def _unavailable_message(topic: str) -> str:
+    return (
+        f"Polymarket data is unavailable for '{topic}'. Do not write, invent, or "
+        "estimate prediction-market odds or numbers; explicitly state that this "
+        "source is unavailable."
+    )
 
 
 def _request(path: str, params: dict) -> dict:
@@ -109,15 +121,19 @@ def get_prediction_markets(topic: str, limit: int | None = None, as_of_date: str
     if limit is None:
         limit = DEFAULT_LIMIT
 
+    circuit_error = source_circuit_error("get_prediction_markets")
+    if circuit_error is not None:
+        record_source_failure("get_prediction_markets", circuit_error)
+        return _unavailable_message(topic)
+
     try:
         data = _request("public-search", {"q": topic, "limit_per_type": 20})
     except requests.RequestException as e:
         logger.warning("Polymarket search failed for %r: %s", topic, e)
         record_source_failure("get_prediction_markets", e)
-        return (
-            f"Polymarket data is currently unavailable (network error: {e}). "
-            f"Proceed without prediction-market signal for '{topic}'."
-        )
+        if isinstance(e, (requests.ConnectionError, requests.Timeout)):
+            trip_source_circuit("get_prediction_markets", e)
+        return _unavailable_message(topic)
 
     now = datetime.now(UTC)
     candidates = [
