@@ -318,11 +318,11 @@ def get_prediction_markets(
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
 ) -> str:
     """
-    Retrieve live, market-implied probabilities for forward-looking events from
-    prediction markets (Polymarket): Fed decisions, recession, elections,
-    geopolitics, crypto. Returns the most-traded open markets matching the
-    topic, each with its implied probability, traded volume, resolution date,
-    and recent move. Uses the configured prediction_markets vendor.
+    Retrieve live, market-implied prices for forward-looking events from the
+    configured prediction-market vendor (Kalshi by default, Polymarket when
+    selected in config). Returns open markets matching the topic, with source,
+    retrieval time, traded volume and close date. Search coverage is bounded;
+    no matches do not establish that no market exists.
 
     Args:
         topic (str): Event keyword(s) to search; defaults to Fed rate policy

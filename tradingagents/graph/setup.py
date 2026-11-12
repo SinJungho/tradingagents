@@ -2,7 +2,7 @@ import logging
 from collections import Counter
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -22,6 +22,7 @@ from tradingagents.agents import (
 )
 from tradingagents.agents.analysts.turn import WRAP_UP
 from tradingagents.agents.state import AgentState
+from tradingagents.output_quality import extract_numeric_values
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -46,8 +47,8 @@ RISK_ANALYSIS_PATH_MAP = {
 
 
 def _tools_or_done(state) -> str:
-    """Route an analyst's turn: run its tool calls, or finish with its report."""
-    return "tools" if state["messages"][-1].tool_calls else END
+    """Route an analyst's turn to its tools or evidence collector."""
+    return "tools" if state["messages"][-1].tool_calls else "collect_tool_evidence"
 
 
 def _analyst_graph(spec, agent, max_tool_rounds: int):
@@ -59,7 +60,10 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
     that turn ends it whatever it answers, so a model that keeps calling tools
     cannot run the graph into its recursion limit (#1420).
     """
-    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
+    output = TypedDict(f"{spec.key.capitalize()}Report", {
+        spec.report_key: str,
+        "tool_evidence_numbers": list[str],
+    })
     graph = StateGraph(AgentState, output_schema=output)
     graph.add_node("agent", agent)
     graph.add_edge(START, "agent")
@@ -84,9 +88,21 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
 
     graph.add_node("tools", ToolNode(list(spec.tools)))
     graph.add_node("wrap_up", wrap_up)
-    graph.add_conditional_edges("agent", _tools_or_done, ["tools", END])
+    def collect_tool_evidence(state):
+        return {
+            "tool_evidence_numbers": [
+                value
+                for message in state.get("messages", [])
+                if isinstance(message, ToolMessage)
+                for value in extract_numeric_values(str(message.content))
+            ]
+        }
+
+    graph.add_node("collect_tool_evidence", collect_tool_evidence)
+    graph.add_conditional_edges("agent", _tools_or_done, ["tools", "collect_tool_evidence"])
     graph.add_conditional_edges("tools", more_or_wrap_up, ["agent", "wrap_up"])
-    graph.add_edge("wrap_up", END)
+    graph.add_edge("wrap_up", "collect_tool_evidence")
+    graph.add_edge("collect_tool_evidence", END)
     return graph.compile()
 
 

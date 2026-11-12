@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    get_evidence_instruction,
+    get_instrument_context_from_state,
+    get_language_instruction,
+    get_position_blind_instruction,
+)
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
@@ -27,11 +32,11 @@ def create_research_manager(llm):
 ---
 
 **Rating Scale** (use exactly one):
-- **Buy**: Strong conviction in the bull thesis; recommend taking or growing the position
+- **Buy**: Strong conviction in the bull thesis; recommend opening or growing exposure
 - **Overweight**: Constructive view; recommend gradually increasing exposure
-- **Hold**: Balanced view; recommend maintaining the current position
-- **Underweight**: Cautious view; recommend trimming exposure
-- **Sell**: Strong conviction in the bear thesis; recommend exiting or avoiding the position
+- **Hold**: Balanced view or insufficient evidence for a directional recommendation
+- **Underweight**: Cautious view; recommend trimming exposure if held, otherwise waiting
+- **Sell**: Strong conviction in the bear thesis; recommend exiting if held or avoiding entry
 
 The debate always contains conflicting arguments; deciding which side is stronger is the job, so conflict alone is not a reason to Hold. Commit to the side with the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not manufacture a direction to appear decisive. Weigh the bull and bear cases on their merits, independent of which side spoke first or last.
 
@@ -48,7 +53,7 @@ Write these sections, in this order, starting with the recommendation on its own
 - **Rationale**: which arguments decided it
 - **Strategic Actions**: concrete steps for the trader, sized against a standard allocation
 
-{NO_EXTERNAL_TOOLS}""" + get_language_instruction()
+{NO_EXTERNAL_TOOLS}""" + get_evidence_instruction() + get_position_blind_instruction() + get_language_instruction()
 
         investment_plan = invoke_structured_or_freetext(
             structured_llm,

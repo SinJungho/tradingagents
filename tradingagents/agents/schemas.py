@@ -114,15 +114,18 @@ class ResearchPlan(BaseModel):
         description=(
             "Conversational summary of the key points from both sides of the "
             "debate, ending with which arguments led to the recommendation. "
-            "Speak naturally, as if to a teammate."
+            "Speak naturally, as if to a teammate. Use only supplied evidence, "
+            "identify sources and as-of times when available, and do not repeat "
+            "unsupported numbers from either argument."
         ),
     )
     strategic_actions: str = Field(
         description=(
             "Concrete steps for the trader to implement the recommendation, "
-            "including sizing guidance relative to a standard allocation. The "
-            "research team does not see the caller's holdings; the trader and "
-            "portfolio manager apply the actual position."
+            "including high-level sizing guidance relative to a standard allocation. "
+            "Do not invent exact price levels or returns. The research team does "
+            "not see the caller's holdings; do not make user-specific position "
+            "claims. The trader and portfolio manager apply any supplied position."
         ),
     )
 
@@ -158,7 +161,8 @@ class TraderProposal(BaseModel):
     reasoning: str = Field(
         description=(
             "The case for this action, anchored in the analysts' reports and "
-            "the research plan. Two to four sentences."
+            "the research plan. Attribute numeric claims to their supplied source "
+            "when available. Two to four sentences."
         ),
     )
     entry_price: float | None = Field(
@@ -166,7 +170,8 @@ class TraderProposal(BaseModel):
         description=(
             "Optional entry price target as an absolute number in the instrument's "
             "quote currency (e.g. 189.5), never a percentage or a range. Omit it "
-            "if you cannot state a specific level."
+            "unless supplied market data supports the level; identify the supporting "
+            "source and calculation in reasoning."
         ),
     )
     stop_loss: float | None = Field(
@@ -174,12 +179,16 @@ class TraderProposal(BaseModel):
         description=(
             "Optional stop-loss as an absolute price in the instrument's quote "
             "currency (e.g. 172.0), never a percentage. Convert a percentage "
-            "distance to the price level it implies, or omit it."
+            "distance only when the starting price and distance are supplied. "
+            "Identify the supporting market-data source in reasoning; otherwise omit it."
         ),
     )
     position_sizing: str | None = Field(
         default=None,
-        description="Optional sizing guidance, e.g. '5% of portfolio'.",
+        description=(
+            "Optional sizing guidance grounded in supplied portfolio and research "
+            "data. Do not invent an exact percentage when no allocation basis is provided."
+        ),
     )
 
     @field_validator("entry_price", "stop_loss", mode="before")
@@ -240,19 +249,25 @@ class PortfolioDecision(BaseModel):
     executive_summary: str = Field(
         description=(
             "A concise action plan covering entry strategy, position sizing, "
-            "key risk levels, and time horizon. Two to four sentences."
+            "key risk levels, and time horizon. Use only supplied evidence; do not "
+            "invent exact levels, returns, or percentages. Two to four sentences."
         ),
     )
     investment_thesis: str = Field(
         description=(
             "Detailed reasoning anchored in specific evidence from the analysts' "
-            "debate. If prior lessons are referenced in the prompt context, "
+            "debate, naming sources and as-of dates for numeric claims when supplied. "
+            "Do not repeat unsupported numbers. If prior lessons are referenced in the prompt context, "
             "incorporate them; otherwise rely solely on the current analysis."
         ),
     )
     price_target: float | None = Field(
         default=None,
-        description="Optional target price in the instrument's quote currency.",
+        description=(
+            "Optional target price in the instrument's quote currency. Include it "
+            "only when the supplied data and an explicit calculation basis support "
+            "it; identify the source and method in the thesis, otherwise omit it."
+        ),
     )
     time_horizon: str | None = Field(
         default=None,

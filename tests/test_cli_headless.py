@@ -8,6 +8,12 @@ import typer
 
 from cli import prompts, run, selections
 from cli.models import AnalystType, AssetType
+from tradingagents.dataflows.errors import (
+    drain_source_failures,
+    record_source_failure,
+    source_circuit_error,
+    trip_source_circuit,
+)
 
 UNATTENDED_ENV = {
     "TRADINGAGENTS_OUTPUT_LANGUAGE": "English",
@@ -44,6 +50,29 @@ class TestFlagValues:
             prompts.parse_analysts("fundamentals", AssetType.CRYPTO)
         with pytest.raises(ValueError, match="at least one"):
             prompts.parse_analysts(" , ", AssetType.STOCK)
+
+
+@pytest.mark.unit
+def test_source_failure_summary_aggregates_safely_and_drains_the_circuit():
+    drain_source_failures()
+    first = ConnectionError("private provider response text")
+    second = ConnectionError("another private response")
+    try:
+        record_source_failure("get_prediction_markets", first)
+        record_source_failure("get_prediction_markets", second)
+        trip_source_circuit("get_prediction_markets", first)
+
+        summary = run._drain_source_failure_summary()
+
+        assert summary == (
+            "- get_prediction_markets data retrieval failed: 연결 오류 "
+            "(재시도 가능: 예) (2회)"
+        )
+        assert "private provider response text" not in summary
+        assert source_circuit_error("get_prediction_markets") is None
+        assert drain_source_failures() == []
+    finally:
+        drain_source_failures()
 
 
 @pytest.mark.unit

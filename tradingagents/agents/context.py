@@ -11,6 +11,43 @@ from tradingagents.dataflows.vendors.yahoo.fundamentals import get_company_profi
 logger = logging.getLogger(__name__)
 
 
+def get_evidence_instruction() -> str:
+    """Tell report-writing agents how to keep numeric claims traceable."""
+    return (
+        " Numeric claims about this instrument or its markets must be supported "
+        "by supplied tool data or a source cited in the reports. Name the source "
+        "and its as-of time/date when provided; never invent a source or timestamp. "
+        "For calculated values, state the inputs and calculation. Do not create "
+        "or repeat unsupported prices, targets, odds, probabilities, returns, or "
+        "exact levels. Treat an earlier agent's unsourced number as unverified; "
+        "omit it or label it unverified. Separate reported facts from interpretation."
+    )
+
+
+def get_position_instruction() -> str:
+    """Explain how recommendations map to an explicitly supplied position."""
+    return (
+        " Use the supplied portfolio as the source of truth for the caller's "
+        "position. A positive quantity is long and a negative quantity is short. "
+        "For a long position, distinguish adding, maintaining, reducing, and "
+        "exiting. For no current position, describe opening or avoiding an entry; "
+        "do not say maintain, reduce, or exit an existing position. For a short "
+        "position, distinguish maintaining, covering/reducing, and increasing "
+        "the short. If holdings are not provided or are unknown, do not claim the "
+        "caller holds or does not hold the instrument; phrase actions conditionally."
+    )
+
+
+def get_position_blind_instruction() -> str:
+    """Keep research-only agents from guessing the caller's holdings."""
+    return (
+        " You do not receive the caller's portfolio. Do not claim that the caller "
+        "holds or does not hold this instrument, and do not frame recommendations "
+        "as maintaining, reducing, or exiting their actual position. State the "
+        "investment direction generally; downstream agents apply any supplied holdings."
+    )
+
+
 def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
 

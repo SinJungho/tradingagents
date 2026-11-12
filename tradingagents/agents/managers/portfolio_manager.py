@@ -11,9 +11,11 @@ free-text generation and the rating is read from that text.
 from __future__ import annotations
 
 from tradingagents.agents.context import (
+    get_evidence_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
+    get_position_instruction,
 )
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
@@ -54,6 +56,8 @@ def create_portfolio_manager(llm):
 - **Underweight**: Reduce exposure, take partial profits
 - **Sell**: Exit position or avoid entry
 
+Apply the rating to the supplied position: when no position is held, Buy/Overweight mean open or build an entry, Hold means wait, and Underweight/Sell mean avoid entry. For a short position, Buy/Overweight mean cover or reduce the short; Underweight/Sell mean maintain or increase it.
+
 **Context:**
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
@@ -73,7 +77,7 @@ Write these sections, in this order, starting with the rating on its own line:
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
 
-{NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
+{NO_EXTERNAL_TOOLS}{get_evidence_instruction()}{get_position_instruction()}{get_language_instruction()}"""
 
         # The typed rating is the decision; the rendered text only carries it.
         # Read back from text, a rating the thesis quotes could replace it.

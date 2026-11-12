@@ -1,7 +1,11 @@
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.analysts.turn import take_turn
-from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.context import (
+    get_evidence_instruction,
+    get_instrument_context_from_state,
+    get_language_instruction,
+)
 from tradingagents.agents.tools import (
     get_balance_sheet,
     get_cashflow,
@@ -29,6 +33,7 @@ def create_fundamentals_analyst(llm):
             "You are a researcher tasked with analyzing fundamental information over the past week about the instrument. Please write a comprehensive report using available filings and company or fund data. If resolved identity identifies an ETF or mutual fund, analyze its fund overview, operations, fees, asset classes, and holdings; do not interpret company financial statements or insider transactions as applicable to the fund. Clearly mark fields the provider does not supply. For operating companies, reconcile periods and units across filings before comparing figures, and report unresolved source inconsistencies instead of choosing an unsupported value. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, and `get_insider_transactions` for recent insider buying and selling."
+            + get_evidence_instruction()
             + get_language_instruction()
         )
 

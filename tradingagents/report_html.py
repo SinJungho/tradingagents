@@ -245,7 +245,7 @@ def _run_details(final_state: dict, settings: dict | None) -> list[tuple[str, st
     return details
 
 
-def render_report(ticker: str, final_state: dict, settings: dict | None, parts) -> str:
+def render_report(ticker: str, final_state: dict, settings: dict | None, parts, quality_warnings=()) -> str:
     """The report page: title and rating, what produced the run, contents, sections."""
     md = _markdown()
     rating = run_rating(final_state) if final_state.get("final_trade_decision") else ""
@@ -274,6 +274,20 @@ def render_report(ticker: str, final_state: dict, settings: dict | None, parts) 
         for m, (agent, _filename, text) in enumerate(written, 1):
             body.append(f'<h3 id="s{n}-{m}">{escape(agent)}</h3>\n{_render_agent_text(md, text)}')
         body.append("</section>")
+
+    warning_items = "".join(
+        f'<li><strong>Location:</strong> {escape(warning.location)}; '
+        f'<strong>Reason:</strong> {escape(warning.reason)}</li>'
+        for warning in quality_warnings
+    )
+    if not warning_items:
+        warning_items = "<li>No deterministic warning candidates were found.</li>"
+    body.append(
+        '<section id="quality-review"><h2>Output Quality Review Warnings</h2>'
+        '<p>Deterministic checks cover a limited set of Korean and English patterns; '
+        'no warning does not prove factual correctness.</p>'
+        f"<ul>{warning_items}</ul></section>"
+    )
 
     page_title = " ".join(x for x in (ticker, date, rating) if x)
     return f"""<!doctype html>

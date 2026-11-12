@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.agents.rating import run_rating
+from tradingagents.output_quality import review_output
 
 
 def analyst_names(keys) -> list[str]:
@@ -70,6 +71,9 @@ _SECTIONS = (
     ("V. Portfolio Manager Decision", "5_portfolio", (
         ("Portfolio Manager", "decision.md", ("final_trade_decision",)),
     )),
+    ("VI. Data Source Failures", "6_data_sources", (
+        ("Data Retrieval", "failures.md", ("source_failures",)),
+    )),
 )
 
 
@@ -89,6 +93,23 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
     return parts
 
 
+def _quality_section(warnings) -> str:
+    lines = [
+        "## Output Quality Review Warnings",
+        "",
+        "Deterministic checks cover a limited set of Korean and English patterns; no warning does not prove factual correctness.",
+        "",
+    ]
+    if warnings:
+        lines.extend(
+            f"- **Location:** {warning.location}; **Reason:** {warning.reason}"
+            for warning in warnings
+        )
+    else:
+        lines.append("- No deterministic warning candidates were found.")
+    return "\n".join(lines)
+
+
 def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict | None = None,
                       html: bool = True) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path.
@@ -102,6 +123,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     parts = _report_parts(final_state)
+    quality_warnings = review_output(final_state, ticker, parts)
     sections = []
     for heading, folder, written in parts:
         (save_path / folder).mkdir(exist_ok=True)
@@ -110,14 +132,14 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
         content = "\n\n".join(f"### {agent}\n{text}" for agent, _filename, text in written)
         sections.append(f"## {heading}\n\n{content}")
 
-    (save_path / "complete_report.md").write_text(
-        _header(ticker, final_state, settings) + "\n\n".join(sections), encoding="utf-8"
-    )
+    markdown = _header(ticker, final_state, settings) + "\n\n".join(sections)
+    markdown += "\n\n" + _quality_section(quality_warnings)
+    (save_path / "complete_report.md").write_text(markdown, encoding="utf-8")
     if html:
         from tradingagents.report_html import render_report
 
         (save_path / "complete_report.html").write_text(
-            render_report(ticker, final_state, settings, parts), encoding="utf-8"
+            render_report(ticker, final_state, settings, parts, quality_warnings), encoding="utf-8"
         )
     else:
         (save_path / "complete_report.html").unlink(missing_ok=True)

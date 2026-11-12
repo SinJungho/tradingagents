@@ -144,6 +144,7 @@ def test_a_full_run_reaches_a_logged_decision(tmp_path, monkeypatch, offline, st
                     "get_balance_sheet", "get_cashflow", "get_income_statement",
                     "get_insider_transactions", "ohlcv"}
     assert offline == tool_methods
+    assert state["tool_evidence_numbers"]
     assert [e["rating"] for e in graph.memory_log.load_entries()] == ["Overweight"]
 
 
