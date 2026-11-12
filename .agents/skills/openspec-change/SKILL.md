@@ -1,0 +1,48 @@
+---
+name: openspec-change
+description: 기능 추가·동작 변경을 OpenSpec 변경안 작성부터 구현, 검증, 아카이브, 커밋까지 진행한다. "이 기능 구현해", "계획 제안해", "해당 작업들 진행해", "OpenSpec으로 진행", "goal 계획대로 진행" 요청에 사용한다.
+---
+
+# OpenSpec 변경 진행
+
+`AGENTS.md`의 OpenSpec·Verification 규칙을 따른다. 산출물 언어와 형식은 `openspec/config.yaml`(한국어, 구조 헤딩과 SHALL/MUST는 영어).
+
+## 1. 계획
+
+- `openspec/specs/`에서 관련 capability를 찾고, `openspec/changes/`에 진행 중인 변경이 있는지 확인한다.
+- 범위가 크면 계획을 먼저 제시하고 사용자 확인을 받는다. 결정이 필요한 갈림길(데이터 공급자, 유료 여부 등)만 질문한다.
+
+## 2. 변경안 작성 (`openspec/changes/<kebab-name>/`)
+
+- `proposal.md`: `# 제목`, `## Why`, `## What Changes`, `## Out of Scope`
+- `specs/<capability>/spec.md`: `## ADDED|MODIFIED Requirements` → `### Requirement:` (MUST/SHALL 포함) → `#### Scenario:` (`- **WHEN**` / `- **THEN**`)
+- `tasks.md`: 체크박스 작업 목록
+- 검증: `npx --offline @fission-ai/openspec validate <name> --strict` (오프라인 캐시가 없으면 `--yes`)
+
+## 3. 구현
+
+- 기존 코드의 헬퍼와 패턴을 먼저 찾아 재사용한다. 브로커는 조회 전용, 테스트는 합성 자료만 쓰고 실브로커·실LLM을 호출하지 않는다.
+- 작업할 때마다 `tasks.md` 체크 상태를 실제와 맞춘다. 범위를 벗어나는 일은 변경안을 고치거나 후속 작업으로 남긴다.
+
+## 4. 검증
+
+1. 바뀐 동작의 집중 테스트
+2. `./.venv/bin/python -m pytest -q`
+3. `./.venv/bin/ruff check .`
+4. `./.venv/bin/tradingagents --help`
+
+실행 결과(통과 수, skip 수)를 그대로 보고한다. 실데이터 평가가 필요한 변경은 결과와 한계를 변경 폴더의 `README.md`에 남긴다.
+
+## 5. 아카이브
+
+```bash
+npx --offline @fission-ai/openspec archive <name> --yes
+```
+
+아카이브가 만든 `openspec/specs/<capability>/spec.md`의 `## Purpose` 아래 "TBD - created by archiving change" 문구를 한 문장 목적으로 바꾼다(종료 hook이 검사한다). 이후 `validate --specs --strict`.
+
+## 6. 커밋 (사용자가 요청한 경우)
+
+- 변경 하나당 커밋 하나. 한 파일에 여러 변경이 섞이면 해당 hunk만 나눠 staging한다.
+- 메시지는 `feat|fix|docs|chore: 간결한 한국어 요약` + 본문 + 저장소 attribution 규칙.
+- 커밋을 여러 개 만들었으면 임시 worktree에서 커밋마다 전체 테스트를 돌려 중간 커밋도 통과하는지 확인한다.

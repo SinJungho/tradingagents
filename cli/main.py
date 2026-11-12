@@ -1,3 +1,4 @@
+import json
 import sys
 from enum import StrEnum
 from typing import Annotated
@@ -15,7 +16,8 @@ from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
-from tradingagents.runtime_diagnostics import diagnose_runtime
+from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
+from tradingagents.stock_discovery import discover_stocks
 from tradingagents.style_scores import evaluate_styles
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -43,6 +45,30 @@ app.add_typer(auth_app, name="auth")
 def doctor() -> None:
     """Diagnose API settings and host reachability visible to this process."""
     typer.echo(diagnose_runtime())
+
+
+@app.command("network-policy")
+def network_policy(
+    output_format: str = typer.Option("json", "--format", help="Output format: json or text"),
+) -> None:
+    """Export the DNS and TCP destinations the current worker needs; does not change host policy."""
+    policy = worker_network_policy()
+    if output_format == "json":
+        typer.echo(json.dumps(policy, ensure_ascii=False, indent=2))
+        return
+    if output_format != "text":
+        console.print("--format must be json or text", style="red")
+        raise typer.Exit(code=2)
+
+    typer.echo(f"정책 적용 위치: {policy['policy_owner']} (이 명령은 정책을 변경하지 않음)")
+    typer.echo("DNS: 워커 resolver로 UDP/TCP 53 허용")
+    typer.echo("TCP 목적지:")
+    for destination in policy["destinations"]:
+        scope = "로컬" if destination["scope"] == "loopback" else "네트워크"
+        sources = ", ".join(destination["sources"])
+        typer.echo(f"- {destination['hostname']}:{destination['port']} ({scope}; {sources})")
+    if policy["unresolved"]:
+        typer.echo("확인 불가: " + ", ".join(policy["unresolved"]))
 
 
 @app.callback(invoke_without_command=True)
@@ -192,6 +218,21 @@ def style_backtest(
     result = evaluate_styles(names, dates, progress=lambda done, total, ticker: console.print(
         f"[dim][{done}/{total}] {ticker}[/dim]"))
     console.print(escape(result.render()))
+
+
+@app.command("discover")
+def discover(
+    tickers: str = typer.Option(
+        ..., "--tickers", help="Comma-separated US stock tickers, up to 10, e.g. NVDA,AAPL"
+    ),
+):
+    """Show current deterministic style signals for a supplied ticker list; calls no model."""
+    try:
+        result = discover_stocks([ticker.strip() for ticker in tickers.split(",")])
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1) from None
+    console.print(result.render(), markup=False)
 
 
 # The plans `login` and `logout` take: the providers signed in to, not keyed.

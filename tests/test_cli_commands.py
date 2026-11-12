@@ -64,6 +64,46 @@ def test_help_lists_the_backtest_command(runner):
     assert "backtest" in runner.invoke(m.app, ["--help"]).output
 
 
+@pytest.mark.unit
+def test_discover_command_passes_the_supplied_ticker_order_without_running_analysis(
+    runner, monkeypatch
+):
+    from types import SimpleNamespace
+
+    selected = []
+    monkeypatch.setattr(
+        m,
+        "discover_stocks",
+        lambda tickers: selected.append(tickers) or SimpleNamespace(render=lambda: "fixture output"),
+    )
+
+    result = runner.invoke(m.app, ["discover", "--tickers", "aaa,BRK.B"])
+
+    assert result.exit_code == 0, result.output
+    assert selected == [["aaa", "BRK.B"]]
+    assert "fixture output" in result.output
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_discover_command_reports_invalid_input_without_traceback(runner, monkeypatch):
+    def invalid(_tickers):
+        raise ValueError("provide between 1 and 10 tickers")
+
+    monkeypatch.setattr(m, "discover_stocks", invalid)
+    result = runner.invoke(m.app, ["discover", "--tickers", "AAPL"])
+
+    assert result.exit_code == 1
+    assert "between 1 and 10" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.unit
+def test_help_lists_discover_command(runner):
+    result = runner.invoke(m.app, ["--help"])
+    assert "discover" in result.output
+
+
 class _Result:
     def __init__(self, tmp_path):
         self.run_id = "20260916_000000"
