@@ -22,7 +22,9 @@ import logging
 from datetime import datetime
 from urllib.request import Request, urlopen
 
+from tradingagents.api_diagnostics import classify_api_failure
 from tradingagents.dataflows.date_window import coverage_gap, in_window
+from tradingagents.dataflows.net import retry_transient_call
 from tradingagents.dataflows.symbols import crypto_base
 
 logger = logging.getLogger(__name__)
@@ -97,12 +99,19 @@ def fetch_stocktwits_messages(
     url = _API.format(ticker=_stocktwits_symbol(ticker))
     req = Request(url, headers={"User-Agent": _UA, "Accept": "application/json"})
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with retry_transient_call(
+            lambda: urlopen(req, timeout=timeout),
+            provider="StockTwits",
+            host="api.stocktwits.com",
+        ) as resp:
             data = json.loads(resp.read())
     except (OSError, http.client.HTTPException, json.JSONDecodeError) as exc:
         # OSError covers URLError/TimeoutError/connection resets; HTTPException
         # covers chunked-transfer errors (IncompleteRead/BadStatusLine, #1024).
-        logger.warning("StockTwits fetch failed for %s: %s", ticker, exc)
+        logger.warning(
+            "API fetch failed provider=StockTwits host=api.stocktwits.com category=%s",
+            classify_api_failure(exc).category,
+        )
         return f"<stocktwits unavailable: {type(exc).__name__}>"
 
     fetched = data.get("messages", []) if isinstance(data, dict) else []

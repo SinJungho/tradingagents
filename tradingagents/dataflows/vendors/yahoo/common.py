@@ -8,6 +8,7 @@ import time
 import yfinance as yf
 from yfinance.exceptions import YFPricesMissingError, YFRateLimitError
 
+from tradingagents.api_diagnostics import classify_api_failure
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.net import vendor_reachable
 
@@ -62,7 +63,7 @@ def _answered_empty(exc: Exception) -> bool:
 
 
 def yf_retry(func, max_retries=3, base_delay=2.0):
-    """Execute a yfinance call with exponential backoff on rate limits.
+    """Retry rate limits and transient Yahoo transport failures.
 
     yfinance raises YFRateLimitError on HTTP 429 responses but does not
     retry them internally, so this wrapper retries them. A rate limit that
@@ -76,16 +77,36 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
     for attempt in range(max_retries + 1):
         try:
             return func()
-        except YFRateLimitError as exc:
+        except YFRateLimitError:
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
-                logger.warning(f"Yahoo Finance rate limited, retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})")
+                logger.warning(
+                    "Transient API failure provider=Yahoo Finance host=query2.finance.yahoo.com "
+                    "category=rate_limit attempt=%d/%d",
+                    attempt + 1,
+                    max_retries + 1,
+                )
                 time.sleep(delay)
             else:
                 raise VendorUnavailableError(
-                    f"Yahoo Finance rate limited after {max_retries} retries: {exc}"
-                ) from exc
+                    f"Yahoo Finance rate limited after {max_retries} retries"
+                ) from None
         except Exception as exc:
             if _answered_empty(exc):
                 return None
-            raise VendorUnavailableError(f"Yahoo Finance request failed: {type(exc).__name__}") from exc
+            failure = classify_api_failure(exc)
+            if failure.category in {"dns", "connection", "timeout", "provider_server"}:
+                if attempt == 0:
+                    logger.warning(
+                        "Transient API failure provider=Yahoo Finance "
+                        "host=query2.finance.yahoo.com category=%s attempt=1/2",
+                        failure.category,
+                    )
+                    time.sleep(0.2)
+                    continue
+                raise VendorUnavailableError(
+                    f"Yahoo Finance request failed ({failure.category}) after 2 attempts"
+                ) from None
+            raise VendorUnavailableError(
+                f"Yahoo Finance request failed: {type(exc).__name__}"
+            ) from None

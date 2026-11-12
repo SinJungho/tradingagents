@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 from collections.abc import Callable, Mapping
 from urllib.parse import urlsplit
+
+import requests
 
 from tradingagents.api_diagnostics import (
     APIFailure,
@@ -13,6 +16,7 @@ from tradingagents.api_diagnostics import (
     format_api_failure,
     probe_endpoint,
 )
+from tradingagents.dataflows.vendors.polymarket import probe_transport, transport_target
 from tradingagents.default_config import build_default_config
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 
@@ -37,9 +41,36 @@ _PROVIDER_ENDPOINTS = {
     "ollama": "http://localhost:11434/v1",
 }
 _DATA_ENDPOINTS = (
-    ("Yahoo Finance", "https://query1.finance.yahoo.com"),
+    ("Yahoo Finance (quotes)", "https://query2.finance.yahoo.com"),
+    ("Yahoo Finance (news)", "https://query1.finance.yahoo.com"),
+    ("Alpha Vantage", "https://www.alphavantage.co"),
+    ("FRED", "https://api.stlouisfed.org"),
     ("SEC EDGAR", "https://www.sec.gov"),
+    ("SEC company facts", "https://data.sec.gov"),
     ("Toss Open API", "https://openapi.tossinvest.com"),
+    ("Reddit", "https://www.reddit.com"),
+    ("StockTwits", "https://api.stocktwits.com"),
+    ("Polymarket", "https://gamma-api.polymarket.com"),
+    ("Kalshi", "https://external-api.kalshi.com"),
+    ("OpenAI auth", "https://auth.openai.com"),
+)
+_DATA_VENDOR_ENDPOINTS = {
+    "yfinance": (
+        ("Yahoo Finance (quotes)", "https://query2.finance.yahoo.com"),
+        ("Yahoo Finance (news)", "https://query1.finance.yahoo.com"),
+    ),
+    "alpha_vantage": (("Alpha Vantage", "https://www.alphavantage.co"),),
+    "sec_edgar": (
+        ("SEC EDGAR", "https://www.sec.gov"),
+        ("SEC company facts", "https://data.sec.gov"),
+    ),
+    "fred": (("FRED", "https://api.stlouisfed.org"),),
+    "polymarket": (("Polymarket", "https://gamma-api.polymarket.com"),),
+    "kalshi": (("Kalshi", "https://external-api.kalshi.com"),),
+}
+_ALWAYS_USED_DATA_ENDPOINTS = (
+    ("Reddit", "https://www.reddit.com"),
+    ("StockTwits", "https://api.stocktwits.com"),
 )
 _TYPESAFE_ENDPOINT = "https://api.typesafe.ai"
 _TOSS_ENV = (
@@ -156,6 +187,135 @@ def _probe_status(probe: EndpointProbe) -> str:
     return f"도달 실패: {format_api_failure(probe.failure or APIFailure('unknown', False))}"
 
 
+def _selected_data_endpoints(config: Mapping[str, object]):
+    """Return destinations in configured vendor chains and their provider names."""
+    from tradingagents.dataflows.router import TOOLS_CATEGORIES, VENDOR_METHODS
+
+    data_vendors = config.get("data_vendors") or {}
+    tool_vendors = config.get("tool_vendors") or {}
+    selected: set[str] = set()
+    unresolved = []
+
+    for category, category_info in TOOLS_CATEGORIES.items():
+        for method in category_info["tools"]:
+            configured = tool_vendors.get(method, data_vendors.get(category, "default"))
+            configured_vendors = [vendor.strip() for vendor in configured.split(",")]
+            explicit = [vendor for vendor in configured_vendors if vendor and vendor != "default"]
+            available = VENDOR_METHODS[method]
+            vendors = [vendor for vendor in explicit if vendor in available] or (
+                list(available) if not explicit else []
+            )
+            if not vendors:
+                unresolved.append(f"{category}/{method}: configured provider unavailable")
+            selected.update(vendors)
+
+    endpoints = {
+        endpoint
+        for vendor in selected
+        for endpoint in _DATA_VENDOR_ENDPOINTS.get(vendor, ())
+    }
+    unmapped = selected - _DATA_VENDOR_ENDPOINTS.keys()
+    if unmapped:
+        unresolved.extend(f"data provider: {vendor}" for vendor in sorted(unmapped))
+    return endpoints, selected, unresolved
+
+
+def worker_network_policy(
+    *,
+    config: Mapping[str, object] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Describe the current worker's required DNS and TCP destinations without URLs or secrets."""
+    active_env = os.environ if environ is None else environ
+    active_config = build_default_config() if config is None else config
+    destinations: dict[tuple[str, int], dict[str, object]] = {}
+    unresolved: list[str] = []
+    selected_endpoints, selected_vendors, vendor_unresolved = _selected_data_endpoints(active_config)
+    unresolved.extend(vendor_unresolved)
+
+    def add(source: str, url: str | None) -> None:
+        if not url:
+            unresolved.append(source)
+            return
+        try:
+            parts = urlsplit(url)
+            hostname = parts.hostname
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+            if not hostname or parts.scheme not in {"http", "https"}:
+                raise ValueError
+            try:
+                address = ipaddress.ip_address(hostname)
+                hostname = address.compressed
+                scope = "loopback" if address.is_loopback else "non_loopback"
+            except ValueError:
+                hostname = hostname.rstrip(".").encode("idna").decode("ascii").lower()
+                labels = hostname.split(".")
+                if any(
+                    not label
+                    or len(label) > 63
+                    or label.startswith("-")
+                    or label.endswith("-")
+                    or not re.fullmatch(r"[a-z0-9-]+", label)
+                    for label in labels
+                ):
+                    raise ValueError from None
+                scope = "loopback" if hostname == "localhost" or hostname.endswith(".localhost") else "non_loopback"
+        except (UnicodeError, ValueError):
+            unresolved.append(source)
+            return
+
+        key = (hostname, port)
+        destination = destinations.setdefault(key, {
+            "hostname": hostname,
+            "transport": "tcp",
+            "port": port,
+            "scope": scope,
+            "sources": [],
+        })
+        destination["sources"].append(source)
+
+    for tier in ("quick", "deep"):
+        provider = _provider(active_config, tier)
+        base_url = _tier_base_url(active_config, provider, tier)
+        add(f"{tier} LLM", _endpoint_url(provider, base_url, active_env))
+
+    for label, url in sorted(selected_endpoints | set(_ALWAYS_USED_DATA_ENDPOINTS)):
+        add(label, url)
+    if "polymarket" in selected_vendors and active_config.get("polymarket_transport", "direct") == "cloudfront_alias":
+        try:
+            alias, _ = transport_target(active_config)
+            add("Polymarket cloudfront_alias", alias)
+        except (requests.RequestException, ValueError) as error:
+            unresolved.append(f"Polymarket cloudfront_alias: {format_api_failure(error)}")
+    if any(_configured(active_env, name) for name in _TOSS_ENV):
+        add("Toss Open API", "https://openapi.tossinvest.com")
+    if _configured(active_env, "TYPESAFE_API_KEY"):
+        add("TypeSafe", active_env.get("TYPESAFE_BASE_URL") or _TYPESAFE_ENDPOINT)
+    if active_config.get("openai_auth") == "chatgpt_plan" or any(
+        _provider(active_config, tier) == "chatgpt" for tier in ("quick", "deep")
+    ):
+        add("OpenAI auth", "https://auth.openai.com")
+
+    return {
+        "schema": "tradingagents.worker-egress.v1",
+        "policy_owner": "Orca 실행 호스트 또는 워커 런타임 관리자",
+        "applies_policy": False,
+        "dns": {
+            "required": True,
+            "destination": "워커 런타임이 지정한 DNS resolver",
+            "transports": ["udp", "tcp"],
+            "port": 53,
+        },
+        "destinations": sorted(
+            destinations.values(), key=lambda item: (item["hostname"], item["port"])
+        ),
+        "unresolved": sorted(set(unresolved)),
+        "limitations": [
+            "AWS credential-chain endpoints and HTTP redirect targets may require additional destinations."
+        ],
+    }
+
+
 def diagnose_runtime(
     *,
     config: Mapping[str, object] | None = None,
@@ -262,16 +422,18 @@ def diagnose_runtime(
 
     lines.extend(["", "데이터 API 도달성"])
     data_endpoints = list(_DATA_ENDPOINTS)
-    for name, url in (
-        ("ALPHA_VANTAGE_API_KEY", "https://www.alphavantage.co"),
-        ("FRED_API_KEY", "https://api.stlouisfed.org"),
-    ):
-        if _configured(active_env, name):
-            data_endpoints.append((name.removesuffix("_API_KEY"), url))
     if _configured(active_env, "TYPESAFE_API_KEY"):
         data_endpoints.append(("TypeSafe", active_env.get("TYPESAFE_BASE_URL") or _TYPESAFE_ENDPOINT))
     for label, url in data_endpoints:
         lines.append(f"- {label}: {check(url)}")
+
+    lines.append("- Polymarket 공식 direct: 위 Polymarket 결과는 HEAD 도달성; 검색 GET 미검증")
+    if active_config.get("polymarket_transport", "direct") == "cloudfront_alias":
+        try:
+            result = _probe_status(probe_transport(active_config))
+        except (requests.RequestException, ValueError) as error:
+            result = format_api_failure(error)
+        lines.append(f"- Polymarket cloudfront_alias: HEAD {result}; 검색 GET 미검증")
 
     if providers == {"unknown"}:
         lines.append("\n진단: 선택된 LLM 제공자를 확인할 수 없습니다.")

@@ -29,7 +29,9 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from tradingagents.api_diagnostics import classify_api_failure
 from tradingagents.dataflows.date_window import coverage_gap, in_window
+from tradingagents.dataflows.net import retry_transient_call
 from tradingagents.dataflows.symbols import crypto_base
 
 logger = logging.getLogger(__name__)
@@ -203,7 +205,11 @@ def _fetch_subreddit_rss(
     url = _RSS.format(sub=sub, qs=_search_qs(ticker, limit))
     req = Request(url, headers={"User-Agent": _UA})
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with retry_transient_call(
+            lambda: urlopen(req, timeout=timeout),
+            provider="Reddit",
+            host="www.reddit.com",
+        ) as resp:
             root = ET.fromstring(_read_capped(resp))
     except HTTPError as exc:
         if exc.code == 429 and _retry:
@@ -217,12 +223,18 @@ def _fetch_subreddit_rss(
             )
             time.sleep(wait)
             return _fetch_subreddit_rss(ticker, sub, limit, timeout, _retry=False)
-        logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
+        logger.warning(
+            "API fetch failed provider=Reddit host=www.reddit.com category=%s",
+            classify_api_failure(exc).category,
+        )
         return None
     except (OSError, http.client.HTTPException, ET.ParseError) as exc:
         # OSError covers URLError/TimeoutError/connection resets; HTTPException
         # covers chunked-transfer errors (IncompleteRead/BadStatusLine, #1024).
-        logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
+        logger.warning(
+            "API fetch failed provider=Reddit host=www.reddit.com category=%s",
+            classify_api_failure(exc).category,
+        )
         return None
 
     posts = []

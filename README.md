@@ -219,6 +219,8 @@ cp .env.example .env
 
 ### CLI Usage
 
+New Codex worker sessions run `tradingagents doctor` automatically at startup after the repository hook is trusted once in Codex (`/hooks`). If a network destination fails, the hook also provides the restricted policy JSON for the Orca execution host. For a manual export, run `tradingagents network-policy --format json`. The output lists DNS resolver access and TCP destinations for the selected quick/deep LLM endpoints and configured data-provider chains, plus the directly used sentiment APIs, configured Toss/TypeSafe services, and ChatGPT plan auth when selected, without printing full URLs or credentials. Tool-level provider overrides take precedence over category settings; `default` includes all providers available to that tool. Configure those destinations and ports in the Orca execution host's network policy, then run `tradingagents doctor` inside the same worker to check the applied route. The export does not change network permissions; loopback targets are marked `loopback` and should not be added to an internet allowlist. An `unresolved` entry needs an endpoint configured before its policy can be generated. AWS credential-chain services and redirect destinations can require extra entries, noted in the export limitations.
+
 To check API configuration from the current process, including an Orca worker, run `tradingagents doctor`. It shows environment-variable names and whether they are set, then sends unauthenticated HTTP `HEAD` requests to the selected LLM and data API hosts. It never prints credential values or reads account data. For `provider=chatgpt`, use `tradingagents login chatgpt`; only the legacy `openai_auth=chatgpt_plan` path uses `tradingagents auth connect`. Doctor checks the selected store locally without refreshing or validating tokens. Local workers should inherit the signed-in user's home (remove unnecessary home overrides), keeping their existing worktree and working directory. They reuse login across restarts and serialize refresh through the existing file lock. Separate remote hosts or containers require their own login. If a sandbox blocks the login callback, run login in a regular terminal on the same host as the same user. Configure credentials on the worker's own execution host; do not copy them into prompts or agent messages.
 
 Launch the interactive CLI:
@@ -452,3 +454,32 @@ Please reference our work if you find *TradingAgents* provides you with some hel
       url={https://arxiv.org/abs/2412.20138}, 
 }
 ```
+
+### Polymarket 별칭 연결
+
+공개 검색의 기본 연결은 `direct`입니다. 회사 네트워크에서 CloudFront 별칭을
+사용하려면 실행 전에 다음 환경변수를 설정합니다.
+
+```bash
+export TRADINGAGENTS_POLYMARKET_TRANSPORT=cloudfront_alias
+# 집이나 핫스팟에서 공식 연결로 복귀
+export TRADINGAGENTS_POLYMARKET_TRANSPORT=direct
+```
+
+Python 설정에서도 `polymarket_transport`를 지정할 수 있습니다. 허용값은 위 두
+가지뿐이며, 잘못된 값은 설정 오류입니다. 이 설정은 공급자 선택과 독립적입니다.
+기본 예측시장 공급자는 Polymarket입니다. Kalshi를 사용하려면 기존 설정의
+`data_vendors.prediction_markets = "kalshi"`를 지정하면 됩니다.
+
+별칭은 시스템 DNS resolver가 반환한 공식 호스트의 canonical name에서 매번
+확인하며, 유효한 `*.cloudfront.net` 이름만 허용합니다. 별도 서버나 로컬 프록시,
+Wi-Fi별 인증서 설치는 필요 없습니다. HTTPS URL과 TLS SNI는 별칭을 사용하고
+HTTP Host는 공식 Gamma API를 유지합니다. **인증서는 별칭에 대해 검증**하므로
+공식 Polymarket 호스트 인증서를 검증하는 것과 보장 범위가 다릅니다. CDN·DNS
+변경이나 네트워크 정책 변경으로 실패할 수 있으며 공식 경로로 자동 전환하지
+않습니다. 두 모드 모두 인증서 검증을 켜고 리다이렉트를 거부하며, 요청 timeout은
+30초, HTTP 시도는 최대 3회입니다.
+
+doctor는 공식 경로와 선택된 별칭의 HEAD 도달성을 따로 표시합니다. HEAD 응답은
+검색 GET 성공을 뜻하지 않으며, 별칭 성공이 공식 연결 복구를 뜻하지 않습니다.
+네트워크 정책 출력에는 동적으로 확인한 별칭 목적지 또는 해결 실패가 반영됩니다.

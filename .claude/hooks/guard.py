@@ -156,9 +156,78 @@ def openspec(payload: dict) -> None:
         print(json.dumps({"decision": "block", "reason": "\n".join(problems)}, ensure_ascii=False))
 
 
+def network(payload: dict) -> None:
+    """Run the safe API doctor once when a new Codex session starts."""
+    candidates = (
+        ROOT / ".venv/bin/tradingagents",
+        ROOT / ".venv/Scripts/tradingagents.exe",
+    )
+    executable = next((path for path in candidates if path.is_file()), None)
+    installed_command = shutil.which("tradingagents")
+    command = [str(executable)] if executable else ([installed_command] if installed_command else None)
+    if command is None:
+        python_candidates = (ROOT / ".venv/bin/python", ROOT / ".venv/Scripts/python.exe")
+        python = next((path for path in python_candidates if path.is_file()), None)
+        command = [str(python or sys.executable), "-m", "cli.main"]
+
+    def report(message: str, status: str | None = None) -> None:
+        output = {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": message,
+            },
+        }
+        if status:
+            output["systemMessage"] = status
+        print(json.dumps(output, ensure_ascii=False))
+
+    try:
+        result = subprocess.run(
+            [*command, "doctor"], cwd=ROOT, capture_output=True, text=True, timeout=70,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        report(
+            "워커 시작 API 사전 진단을 완료하지 못했습니다. "
+            "필요하면 `tradingagents doctor`를 직접 실행하세요.",
+            "API 사전 진단 실행 실패",
+        )
+        return
+
+    details = result.stdout.strip()
+    if result.returncode != 0 or not details:
+        report(
+            "워커 시작 API 사전 진단을 완료하지 못했습니다. "
+            "필요하면 `tradingagents doctor`를 직접 실행하세요.",
+            "API 사전 진단 실행 실패",
+        )
+        return
+
+    network_issue = any("도달 실패:" in line for line in details.splitlines())
+    if network_issue:
+        try:
+            policy = subprocess.run(
+                [*command, "network-policy", "--format", "json"],
+                cwd=ROOT, capture_output=True, text=True, timeout=10,
+            )
+            if policy.returncode == 0 and policy.stdout.strip():
+                details += "\n\n실행 호스트에 전달할 제한형 네트워크 정책:\n" + policy.stdout.strip()
+            else:
+                details += "\n\n정책 JSON을 내보내지 못했습니다. "
+                "`tradingagents network-policy --format json`을 실행하세요."
+        except (OSError, subprocess.TimeoutExpired):
+            details += "\n\n제한형 정책 내보내기를 완료하지 못했습니다. "
+            "`tradingagents network-policy --format json`을 실행하세요."
+        details += "\n\n네트워크 정책은 Orca 실행 호스트에서 적용한 뒤 이 워커에서 다시 확인해야 합니다."
+        status = "API 사전 진단에서 도달 실패를 찾음"
+    else:
+        details = "자동 API 사전 진단 통과.\n\n" + details
+
+    report("워커 시작 시 자동 실행한 `tradingagents doctor` 결과:\n\n" + details, status if network_issue else None)
+
+
 if __name__ == "__main__":
     mode, payload = sys.argv[1], json.load(sys.stdin)
     if mode == "live":
         live(payload, codex=sys.argv[2:] == ["codex"])
     else:
-        {"env": env, "ruff": ruff, "openspec": openspec}[mode](payload)
+        {"env": env, "network": network, "ruff": ruff, "openspec": openspec}[mode](payload)

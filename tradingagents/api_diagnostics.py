@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import ssl
 from dataclasses import dataclass
 from typing import Literal
 from urllib.parse import urlsplit
@@ -14,6 +15,7 @@ FailureCategory = Literal[
     "dns",
     "connection",
     "timeout",
+    "tls",
     "authentication",
     "permission",
     "rate_limit",
@@ -49,6 +51,7 @@ _FAILURE_LABELS: dict[FailureCategory, str] = {
     "dns": "DNS 오류",
     "connection": "연결 오류",
     "timeout": "시간 초과",
+    "tls": "TLS 오류",
     "authentication": "인증 거부",
     "permission": "권한 거부",
     "rate_limit": "요청 제한",
@@ -86,6 +89,7 @@ def _status_from_error(error: BaseException) -> int | None:
     for value in (
         getattr(error, "status", None),
         getattr(error, "status_code", None),
+        getattr(error, "code", None),
         getattr(response, "status_code", None),
         response_status,
     ):
@@ -145,6 +149,11 @@ def classify_api_failure(error: BaseException) -> APIFailure:
         for name in names
     ):
         return APIFailure("dns", True)
+    if any(isinstance(item, (ssl.SSLError, requests.exceptions.SSLError)) for item in chain) or any(
+        "sslerror" in name or "tls" in name or "certificateverifyfailed" in name
+        for name in names
+    ):
+        return APIFailure("tls", False)
     if any(
         isinstance(item, (TimeoutError, requests.Timeout))
         or "timeout" in type(item).__name__.lower()

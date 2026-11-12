@@ -31,6 +31,7 @@ from tradingagents import __version__
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.files import replace_file
+from tradingagents.dataflows.net import get_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,12 @@ def _user_agent() -> str:
 def _fetch_json(url: str) -> dict:
     """Read a public EDGAR document, respecting SEC's identification rule."""
     try:
-        response = requests.get(url, headers={"User-Agent": _user_agent()}, timeout=30)
-        response.raise_for_status()
+        response = get_with_retry(
+            url,
+            headers={"User-Agent": _user_agent()},
+            timeout=30,
+            provider="SEC EDGAR",
+        )
         return response.json()
     except requests.RequestException as exc:
         status = getattr(getattr(exc, "response", None), "status_code", None)

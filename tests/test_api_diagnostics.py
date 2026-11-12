@@ -1,4 +1,5 @@
 import socket
+import ssl
 
 import pytest
 import requests
@@ -17,6 +18,7 @@ from tradingagents.api_diagnostics import (
         (requests.Timeout("synthetic token"), "timeout", True),
         (requests.ConnectionError("synthetic endpoint"), "connection", True),
         (socket.gaierror("synthetic host"), "dns", True),
+        (ssl.SSLError("synthetic certificate"), "tls", False),
         (RuntimeError("synthetic private response"), "unknown", False),
     ],
 )

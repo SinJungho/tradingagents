@@ -19,6 +19,9 @@ from tradingagents.dataflows.vendors.alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
 )
 from tradingagents.dataflows.vendors.fred import get_macro_data as get_fred_macro_data
+from tradingagents.dataflows.vendors.kalshi import (
+    get_prediction_markets as get_kalshi_prediction_markets,
+)
 from tradingagents.dataflows.vendors.polymarket import (
     get_prediction_markets as get_polymarket_prediction_markets,
 )
@@ -145,6 +148,7 @@ VENDOR_METHODS = {
     },
     # prediction_markets
     "get_prediction_markets": {
+        "kalshi": get_kalshi_prediction_markets,
         "polymarket": get_polymarket_prediction_markets,
     },
 }

@@ -152,6 +152,7 @@ def _request(path: str, params: dict) -> dict:
         timeout=REQUEST_TIMEOUT,
         secret=api_key,
         passthrough=(400,),
+        provider="FRED",
     )
     # FRED returns 400 with a JSON {"error_message": ...} for unknown series IDs
     # or malformed params; turn that into a clear, actionable error.

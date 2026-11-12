@@ -8,6 +8,7 @@ _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 # of the existing default, so users can keep writing plain strings in
 # their .env file.
 _ENV_OVERRIDES = {
+    "TRADINGAGENTS_POLYMARKET_TRANSPORT": "polymarket_transport",
     "TRADINGAGENTS_LLM_PROVIDER":         "llm_provider",
     "TRADINGAGENTS_OPENAI_AUTH":          "openai_auth",
     "TRADINGAGENTS_DEEP_THINK_LLM":       "deep_think_llm",
@@ -72,7 +73,14 @@ def _apply_env_overrides(config: dict) -> dict:
             config[key] = _coerce(raw, config.get(key))
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
+    validate_polymarket_transport(config.get("polymarket_transport", "direct"))
     return config
+
+
+def validate_polymarket_transport(value):
+    if value not in ("direct", "cloudfront_alias"):
+        raise ValueError("polymarket_transport must be direct or cloudfront_alias")
+    return value
 
 
 def build_default_config() -> dict:
@@ -82,6 +90,7 @@ def build_default_config() -> dict:
     the environment as it is now.
     """
     return _apply_env_overrides({
+        "polymarket_transport": "direct",
         "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR") or os.path.join(_TRADINGAGENTS_HOME, "logs"),
         "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR") or os.path.join(_TRADINGAGENTS_HOME, "cache"),
         "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH") or os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
@@ -168,7 +177,7 @@ def build_default_config() -> dict:
         "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
             "news_data": "yfinance",             # Options: alpha_vantage, yfinance
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
-            "prediction_markets": "polymarket",  # Options: polymarket (keyless)
+            "prediction_markets": "polymarket",   # Options: polymarket, kalshi (public data)
         },
         # Tool-level configuration (takes precedence over category-level)
         "tool_vendors": {

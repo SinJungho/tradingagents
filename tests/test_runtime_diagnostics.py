@@ -2,7 +2,7 @@ from typer.testing import CliRunner
 
 from cli.main import app
 from tradingagents.api_diagnostics import APIFailure, EndpointProbe
-from tradingagents.runtime_diagnostics import diagnose_runtime
+from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
 
 runner = CliRunner()
 
@@ -75,6 +75,133 @@ def test_missing_worker_auth_and_hidden_orca_context_are_explicit():
     assert "인증=API 키 환경변수 (누락)" in report
     assert "synthetic-secret" not in report
     assert "프로세스에 노출되지 않음" not in report
+
+
+def test_diagnostics_checks_public_data_hosts_without_printing_the_urls():
+    seen = []
+
+    def probe(url):
+        seen.append(url)
+        return EndpointProbe(True)
+
+    report = diagnose_runtime(config={}, environ={}, probe=probe)
+
+    for host in (
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+        "www.alphavantage.co",
+        "api.stlouisfed.org",
+        "www.sec.gov",
+        "data.sec.gov",
+        "openapi.tossinvest.com",
+        "www.reddit.com",
+        "api.stocktwits.com",
+        "gamma-api.polymarket.com",
+        "external-api.kalshi.com",
+        "auth.openai.com",
+    ):
+        assert any(host in url for url in seen)
+        assert host not in report
+
+    assert "Yahoo Finance (quotes): 도달 가능" in report
+    assert "SEC company facts: 도달 가능" in report
+
+
+def test_worker_policy_contains_configured_data_vendors_only():
+    policy = worker_network_policy(
+        config={
+            "llm_provider": "openai",
+            "data_vendors": {
+                "core_stock_apis": "yfinance",
+                "technical_indicators": "yfinance",
+                "fundamental_data": "sec_edgar",
+                "news_data": "yfinance",
+                "macro_data": "fred",
+                "prediction_markets": "kalshi",
+            },
+            "tool_vendors": {},
+        },
+        environ={},
+    )
+    hosts = {destination["hostname"] for destination in policy["destinations"]}
+
+    assert {
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+        "www.sec.gov",
+        "data.sec.gov",
+        "api.stlouisfed.org",
+        "external-api.kalshi.com",
+        "www.reddit.com",
+        "api.stocktwits.com",
+    } <= hosts
+    assert {
+        "www.alphavantage.co",
+        "gamma-api.polymarket.com",
+        "openapi.tossinvest.com",
+        "auth.openai.com",
+    }.isdisjoint(hosts)
+
+
+def test_worker_policy_honors_tool_vendor_override():
+    policy = worker_network_policy(
+        config={
+            "llm_provider": "openai",
+            "data_vendors": {
+                "core_stock_apis": "yfinance",
+                "technical_indicators": "yfinance",
+                "fundamental_data": "sec_edgar",
+                "news_data": "yfinance",
+                "macro_data": "fred",
+                "prediction_markets": "kalshi",
+            },
+            "tool_vendors": {"get_stock_data": "alpha_vantage"},
+        },
+        environ={},
+    )
+    hosts = {destination["hostname"] for destination in policy["destinations"]}
+
+    assert "www.alphavantage.co" in hosts
+
+
+def test_worker_policy_includes_all_endpoints_for_unspecified_vendor_chain():
+    policy = worker_network_policy(config={}, environ={})
+    hosts = {destination["hostname"] for destination in policy["destinations"]}
+
+    assert "www.alphavantage.co" in hosts
+    assert "external-api.kalshi.com" in hosts
+    assert "gamma-api.polymarket.com" in hosts
+
+
+def test_worker_policy_uses_polymarket_default_without_kalshi():
+    policy = worker_network_policy(
+        config={
+            "data_vendors": {
+                "core_stock_apis": "yfinance",
+                "technical_indicators": "yfinance",
+                "fundamental_data": "sec_edgar,yfinance",
+                "news_data": "yfinance",
+                "macro_data": "fred",
+                "prediction_markets": "polymarket",
+            },
+            "tool_vendors": {},
+        },
+        environ={},
+    )
+    hosts = {destination["hostname"] for destination in policy["destinations"]}
+
+    assert "gamma-api.polymarket.com" in hosts
+    assert "external-api.kalshi.com" not in hosts
+
+
+def test_worker_policy_includes_chatgpt_auth_only_when_selected():
+    policy = worker_network_policy(
+        config={"llm_provider": "openai", "openai_auth": "chatgpt_plan"},
+        environ={},
+    )
+    hosts = {destination["hostname"] for destination in policy["destinations"]}
+
+    assert "auth.openai.com" in hosts
 
 
 def test_doctor_cli_uses_current_process_diagnostic(monkeypatch):

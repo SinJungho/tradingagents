@@ -10,7 +10,8 @@ from unittest import mock
 import pytest
 import requests
 
-from tradingagents.dataflows.net import get_scrubbed
+from tradingagents.dataflows import net
+from tradingagents.dataflows.net import get_scrubbed, get_with_retry
 
 # A fabricated value in the shape of a FRED key.
 _KEY = "deadbeefdeadbeefdeadbeefdeadbeef"
@@ -63,3 +64,80 @@ def test_a_passthrough_status_is_returned_for_the_caller():
     with mock.patch.object(requests, "get", return_value=response):
         assert _call(passthrough=(400,)) is response
     response.raise_for_status.assert_not_called()
+
+
+@pytest.mark.unit
+def test_transient_get_retries_with_safe_attempt_log(monkeypatch, caplog):
+    response = _response(200)
+    calls = []
+
+    def get(*args, **kwargs):
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            raise requests.ConnectionError("synthetic secret and private URL")
+        return response
+
+    monkeypatch.setattr(net.requests, "get", get)
+    monkeypatch.setattr(net.time, "sleep", lambda _delay: None)
+
+    result = get_with_retry(
+        "https://api.example.test/query",
+        params={"api_key": _KEY},
+        secret=_KEY,
+        timeout=1,
+        provider="Synthetic API",
+    )
+
+    assert result is response
+    assert len(calls) == 2
+    assert "provider=Synthetic API host=api.example.test category=connection attempt=1/3" in caplog.text
+    assert "synthetic secret" not in caplog.text
+    assert _KEY not in caplog.text
+
+
+@pytest.mark.unit
+def test_provider_server_error_retries_but_http_authentication_does_not(monkeypatch):
+    overloaded = requests.Response()
+    overloaded.status_code = 503
+    success = _response(200)
+    calls = []
+
+    def get(*_args, **_kwargs):
+        calls.append(True)
+        return overloaded if len(calls) == 1 else success
+
+    monkeypatch.setattr(net.requests, "get", get)
+    monkeypatch.setattr(net.time, "sleep", lambda _delay: None)
+
+    assert get_with_retry("https://api.example.test/query", timeout=1, provider="Synthetic API") is success
+    assert len(calls) == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "failure",
+    [
+        requests.HTTPError(
+            "synthetic auth response",
+            response=requests.Response(),
+        ),
+        requests.exceptions.SSLError("synthetic certificate details"),
+    ],
+    ids=["authentication", "tls"],
+)
+def test_permanent_get_failures_are_not_retried(monkeypatch, failure):
+    if isinstance(failure, requests.HTTPError):
+        failure.response.status_code = 401
+    calls = []
+
+    def get(*_args, **_kwargs):
+        calls.append(True)
+        raise failure
+
+    monkeypatch.setattr(net.requests, "get", get)
+    monkeypatch.setattr(net.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(requests.RequestException):
+        get_with_retry("https://api.example.test/query", timeout=1, provider="Synthetic API")
+
+    assert len(calls) == 1
