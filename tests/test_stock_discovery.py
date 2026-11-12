@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pandas as pd
 import pytest
+import requests
 
 from tradingagents import stock_discovery
 from tradingagents.style_scores import StyleSignal
@@ -29,6 +31,18 @@ FACTS = {
 def _closes() -> pd.Series:
     index = pd.bdate_range("2024-01-01", "2025-06-02")
     return pd.Series([50.0 + i / 10 for i in range(len(index))], index=index)
+
+
+def _wiki_page(tickers: list[str], *, declared_count: int | None = None) -> str:
+    count = len(tickers) if declared_count is None else declared_count
+    rows = "".join(
+        f"<tr><td>{ticker}</td><td>Company {i}</td></tr>"
+        for i, ticker in enumerate(tickers)
+    )
+    return (
+        f"<p>As of October 22, 2026, the index comprised {count} securities issued by 100 companies.</p>"
+        f"<table><tr><th>Ticker</th><th>Company</th></tr>{rows}</table>"
+    )
 
 
 @pytest.mark.unit
@@ -133,3 +147,74 @@ def test_ticker_count_is_checked_before_validating_or_fetching_members(monkeypat
         stock_discovery.discover_stocks([" "] * 11)
 
     close_call.assert_not_called()
+
+
+@pytest.mark.unit
+def test_nasdaq100_parser_reads_dated_source_order_and_validates_security_count():
+    tickers = [f"ZZ{i:03}" for i in range(101)]
+
+    universe = stock_discovery.parse_nasdaq100_page(_wiki_page(tickers))
+
+    assert universe.name == "Nasdaq-100"
+    assert universe.source == stock_discovery.NASDAQ100_SOURCE
+    assert universe.as_of == "2026-10-22"
+    assert universe.tickers == tuple(tickers)
+
+    with pytest.raises(stock_discovery.Nasdaq100UniverseError, match="lists 101"):
+        stock_discovery.parse_nasdaq100_page(_wiki_page(tickers, declared_count=100))
+
+
+@pytest.mark.unit
+def test_nasdaq100_parser_rejects_missing_membership_date_or_invalid_table():
+    with pytest.raises(stock_discovery.Nasdaq100UniverseError, match="missing its membership date"):
+        stock_discovery.parse_nasdaq100_page(
+            "<p>Constituents</p><table><tr><th>Ticker</th></tr><tr><td>AAA</td></tr></table>"
+        )
+
+
+@pytest.mark.unit
+def test_nasdaq100_fetch_uses_public_source_and_scores_partial_results(monkeypatch):
+    universe_tickers = ("AAA", "BBB")
+    page = _wiki_page([f"ZZ{i:03}" for i in range(101)])
+    fetch = Mock(return_value=SimpleNamespace(text=page))
+    monkeypatch.setattr(stock_discovery, "get_with_retry", fetch)
+    universe = stock_discovery.fetch_nasdaq100_universe()
+    assert universe.as_of == "2026-10-22"
+    fetch.assert_called_once()
+    assert fetch.call_args.args == (stock_discovery.NASDAQ100_SOURCE,)
+    assert fetch.call_args.kwargs["timeout"] == 20
+    assert "User-Agent" in fetch.call_args.kwargs["headers"]
+
+    monkeypatch.setattr(stock_discovery, "fetch_nasdaq100_universe", lambda: stock_discovery.DiscoveryUniverse(
+        "Nasdaq-100", stock_discovery.NASDAQ100_SOURCE, "2026-10-22", universe_tickers
+    ))
+    monkeypatch.setattr(stock_discovery, "get_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(stock_discovery, "_closes", lambda _ticker: _closes())
+    monkeypatch.setattr(stock_discovery, "_facts", lambda ticker, _as_of: FACTS if ticker == "AAA" else None)
+    monkeypatch.setattr(stock_discovery, "get_splits", lambda _ticker: pd.Series(dtype=float))
+
+    result = stock_discovery.discover_nasdaq100()
+    output = result.render()
+
+    assert (result.requested, result.attempted, result.returned) == (2, 2, 2)
+    assert [entry.ticker for entry in result.tickers] == ["AAA", "BBB"]
+    assert result.tickers[1].scores["value"].signal is StyleSignal.ABSTAIN
+    assert "Data as of: 2026-11-12" in output
+    assert "membership as of 2026-10-22" in output
+    assert stock_discovery.NASDAQ100_SOURCE in output
+    assert "secondary public list" in output
+    assert "other US-listed securities were not assessed" in output
+
+
+@pytest.mark.unit
+def test_nasdaq100_fetch_reports_sanitized_source_failure(monkeypatch):
+    monkeypatch.setattr(
+        stock_discovery,
+        "get_with_retry",
+        Mock(side_effect=requests.Timeout("synthetic private request detail")),
+    )
+
+    with pytest.raises(stock_discovery.Nasdaq100UniverseError, match="Timeout") as error:
+        stock_discovery.fetch_nasdaq100_universe()
+
+    assert "synthetic private request detail" not in str(error.value)

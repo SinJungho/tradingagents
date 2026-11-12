@@ -17,7 +17,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
 from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
-from tradingagents.stock_discovery import discover_stocks
+from tradingagents.stock_discovery import discover_nasdaq100, discover_stocks
 from tradingagents.style_scores import evaluate_styles
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -222,13 +222,24 @@ def style_backtest(
 
 @app.command("discover")
 def discover(
-    tickers: str = typer.Option(
-        ..., "--tickers", help="Comma-separated US stock tickers, up to 10, e.g. NVDA,AAPL"
+    tickers: str | None = typer.Option(
+        None, "--tickers", help="Comma-separated US stock tickers, up to 10, e.g. NVDA,AAPL"
+    ),
+    universe: str | None = typer.Option(
+        None, "--universe", help="Index universe to discover: nasdaq100"
     ),
 ):
-    """Show current deterministic style signals for a supplied ticker list; calls no model."""
+    """Show current deterministic style signals for supplied tickers or Nasdaq-100; calls no model."""
+    if (tickers is None) == (universe is None):
+        console.print("Provide exactly one of --tickers or --universe nasdaq100.", style="red", markup=False)
+        raise typer.Exit(code=1)
     try:
-        result = discover_stocks([ticker.strip() for ticker in tickers.split(",")])
+        if universe is not None:
+            if universe.strip().lower() != "nasdaq100":
+                raise ValueError("--universe must be nasdaq100")
+            result = discover_nasdaq100()
+        else:
+            result = discover_stocks([ticker.strip() for ticker in tickers.split(",")])
     except ValueError as exc:
         console.print(str(exc), style="red", markup=False)
         raise typer.Exit(code=1) from None
