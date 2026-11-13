@@ -947,14 +947,22 @@ def _cap_band(market_cap: int | None) -> str | None:
     return None
 
 
-_SPLIT_WORKERS = 8
+_YAHOO_WORKERS = 8
 
 
-def _fetch_splits(symbol: str) -> tuple[pd.Series | None, Exception | None]:
+def _attempt(fetch: Callable[[str], pd.Series], symbol: str) -> tuple[pd.Series | None, Exception | None]:
     try:
-        return get_splits(symbol), None
+        return fetch(symbol), None
     except Exception as exc:  # handled per ticker, exactly as a sequential call would be
         return None, exc
+
+
+def _prefetch(fetch: Callable[[str], pd.Series], symbols: list[str]) -> tuple[dict, float]:
+    """Call ``fetch`` once per symbol on a bounded pool; SEC stays sequential (no rate limiter)."""
+    stage = perf_counter()
+    with ThreadPoolExecutor(max_workers=_YAHOO_WORKERS) as pool:
+        results = dict(zip(symbols, pool.map(lambda symbol: _attempt(fetch, symbol), symbols), strict=True))
+    return results, perf_counter() - stage
 
 
 @company_index_session()
@@ -981,13 +989,11 @@ def _score_tickers(
     timings = dict.fromkeys(('prices', 'sec', 'splits', 'scoring'), 0.0)
     calls = dict.fromkeys(('prices', 'sec', 'splits'), 0)
     reused = {}
-    # Split history has no disk cache and dominated warm runs (266 of 288 s for 503 tickers),
-    # so fetch it once per provider symbol up front, in parallel.
-    stage = perf_counter()
+    # Yahoo prices and split history were sequential per symbol (166 s and 349 s of a 718 s cold
+    # run over 503 tickers), so fetch each once per provider symbol up front, in parallel.
     symbols = list(dict.fromkeys(_provider_symbol(ticker) for ticker in names))
-    with ThreadPoolExecutor(max_workers=_SPLIT_WORKERS) as pool:
-        split_results = dict(zip(symbols, pool.map(_fetch_splits, symbols), strict=True))
-    timings['splits'] = perf_counter() - stage
+    price_results, timings['prices'] = _prefetch(_closes, symbols)
+    split_results, timings['splits'] = _prefetch(get_splits, symbols)
     for ticker in names:
         attempted += 1
         if progress:
@@ -1000,17 +1006,13 @@ def _score_tickers(
                 results.append(replace(cached, ticker=ticker, sections=tuple(memberships.get(ticker, ()))))
             continue
         failure_start = len(failures)
-        stage = perf_counter()
         calls['prices'] += 1
-        try:
-            closes = _closes(symbol)
-        except NoMarketDataError:
+        closes, price_error = price_results[symbol]
+        if price_error is not None:
             closes = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
-        except Exception as exc:
-            closes = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
-            failures.append(_failure(ticker, "Yahoo Finance price history", exc))
+            if not isinstance(price_error, NoMarketDataError):
+                failures.append(_failure(ticker, "Yahoo Finance price history", price_error))
 
-        timings['prices'] += perf_counter() - stage
         stage = perf_counter()
         calls['sec'] += 1
         try:

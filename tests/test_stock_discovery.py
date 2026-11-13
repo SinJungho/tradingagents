@@ -439,7 +439,7 @@ def test_market_discovery_scores_overlap_once_and_reports_sections(monkeypatch):
     result = stock_discovery.discover_market(["sp500", "russell2000"])
 
     assert (result.requested, result.attempted, result.returned) == (3, 3, 3)
-    assert calls == ["AAA", "BBB", "CCC"]
+    assert sorted(calls) == ["AAA", "BBB", "CCC"]  # once per symbol; parallel fetch has no order
     assert result.tickers[0].sections == ("S&P 500", "Russell 2000")
     output = result.render()
     assert "S&P 500: securities=2" in output

@@ -109,3 +109,39 @@ def test_parallel_split_prefetch_keeps_order_and_per_ticker_outcomes(monkeypatch
     assert 'split history' in by_ticker['NODATA'].missing
     assert 'split history' in by_ticker['BROKEN'].missing
     assert 'split history' not in by_ticker['ZZZ'].missing
+
+
+def test_parallel_price_prefetch_keeps_per_ticker_outcomes_and_failure_order(monkeypatch):
+    from tradingagents.dataflows.errors import NoMarketDataError
+
+    history = pd.Series(range(1, 301), index=pd.bdate_range(end='2026-11-12', periods=300), dtype=float)
+    seen = []
+
+    def closes(symbol):
+        seen.append(symbol)
+        if symbol == 'NODATA':
+            raise NoMarketDataError(symbol, symbol, 'no price rows')
+        if symbol == 'BROKEN':
+            raise RuntimeError('synthetic price failure')
+        return history
+
+    def splits(symbol):
+        if symbol == 'BROKEN':
+            raise RuntimeError('synthetic split failure')
+        return pd.Series(dtype=float)
+
+    monkeypatch.setattr(sd, '_closes', closes)
+    monkeypatch.setattr(sd, '_facts', lambda *_: None)
+    monkeypatch.setattr(sd, 'get_splits', splits)
+    monkeypatch.setattr(sd, 'get_current_date', lambda: '2026-11-12')
+    names = ('ZZZ', 'NODATA', 'BROKEN', 'ZZZ')
+    result = sd._score_tickers(names)
+
+    assert sorted(seen) == ['BROKEN', 'NODATA', 'ZZZ']
+    assert result.calls['prices'] == 3
+    assert [entry.ticker for entry in result.tickers] == list(names)
+    # Within a ticker, the price failure still precedes the split failure, as in the sequential loop.
+    assert [(f.ticker, f.source) for f in result.failures] == [
+        ('BROKEN', 'Yahoo Finance price history'), ('BROKEN', 'Yahoo Finance split history')]
+    momentum = {entry.ticker: entry.scores['momentum'].signal for entry in result.tickers}
+    assert momentum['NODATA'] == momentum['BROKEN'] != momentum['ZZZ']
