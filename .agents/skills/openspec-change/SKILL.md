@@ -51,7 +51,8 @@ npx --offline @fission-ai/openspec archive <name> --yes
 
 - Worker 워크트리는 커밋에서 갈라지므로 미커밋 변경은 전달되지 않는다. 시작 전에 기준 커밋을 만든다(사용자 승인 필요).
 - 같은 파일·같은 spec 요구사항을 두 Worker가 고치지 않게 나눈다. 겹치면 하나를 병합한 뒤 다음 Worker를 시작한다.
-- 워크트리에는 `.venv`가 없다. 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인하게 한다.
-- Codex Worker 샌드박스에는 네트워크와 npm 오프라인 캐시가 없을 수 있다. 외부 출처의 HTTP 상태·형식·기준일은 코디네이터가 확인해 spec에 넣고, `openspec validate --strict`·아카이브는 코디네이터가 병합 때 실행한다.
+- 워크트리 Python 환경: Orca 저장소 setup 스크립트에 `uv venv -q .venv && uv pip install -q --python .venv/bin/python -e '.[dev]'`를 넣으면 워크트리마다 자체 `.venv`가 생긴다(2026-11-13 확인: uv 캐시로 약 2초, 전체 pytest 통과). setup 스크립트가 없으면 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인하게 한다.
+- Codex 샌드박스에서는 `npx --offline @fission-ai/openspec`이 ENOTCACHED로 실패한다. 이미 받아 둔 패키지를 `node ~/.npm/_npx/*/node_modules/@fission-ai/openspec/bin/openspec.js validate <name> --strict`로 직접 실행하면 된다(샌드박스에서 확인). 아카이브는 코디네이터가 병합 때 실행한다.
+- Codex 샌드박스에는 외부 네트워크가 없다. 출처의 HTTP 상태·형식·기준일은 코디네이터가 확인해 spec에 넣는다.
 - strict 검증은 요구사항 본문 500자 초과 경고도 실패로 처리한다. spec에 미리 적는다.
 - 병합마다 전체 검증(실패 시 즉시 중단되게 `set -o pipefail`) → 아카이브 → `orchestration worker-stop` → `orca worktree rm --worktree path:<경로> --delete-branch` 순서로 정리한다.
