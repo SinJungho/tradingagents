@@ -128,6 +128,9 @@ def collect_report(provider=None, now=None):
     def missing(section, label, source, reason):
         return add(section, label, None, source, status='unavailable', reason=reason)
 
+    def none_found(section, label, source, reason):
+        return add(section, label, None, source, status='none_found', reason=reason)
+
     def price_history(symbol):
         frame = None
         daily_error = None
@@ -254,16 +257,28 @@ def collect_report(provider=None, now=None):
                 history_metadata[symbol] = meta
         proxy_symbols = []
         split_blocked_symbols = []
+        unavailable_symbols = []
         for symbol in universe.tickers:
             meta = history_metadata.get(symbol, {})
             if meta.get('close_source') == 'same_day_5m_regular_close_proxy':
                 proxy_symbols.append(symbol)
+            if meta.get('close_source') == 'unavailable':
+                unavailable_symbols.append(symbol)
             if meta.get('split_blocked'):
                 split_blocked_symbols.append(symbol)
             members[symbol] = histories[symbol]
             if histories[symbol].iloc[-2:].isna().any():
                 excluded.append(symbol)
         stats = breadth_stats(members)
+        short_history_excluded = {
+            period: sum(
+                history_metadata.get(symbol, {}).get('close_source') != 'unavailable'
+                and not (len(history) >= max(2, period)
+                         and history.iloc[-max(2, period):].notna().all())
+                for symbol, history in members.items()
+            )
+            for period in (1, 50, 200)
+        }
         spy_proxy = universe.source == SPY_HOLDINGS_SOURCE
         wikipedia_fallback = 'wikipedia.org' in universe.source
         breadth_label = ('SPY 보유 종목 대용치의 시장 폭 (공식 S&P 500 지수 구성 아님)' if spy_proxy
@@ -272,13 +287,24 @@ def collect_report(provider=None, now=None):
                             None if wikipedia_fallback or 'retrieved' in universe.as_of_label else universe.as_of)
         membership_note = ('SPY ETF 보유 종목 대용치이며 공식 S&P 500 지수 구성 목록이 아님' if spy_proxy
                            else 'Wikipedia 현재 구성표 대체 자료; 구성 기준일 미확인' if wikipedia_fallback else None)
+        notes = [membership_note] if membership_note else []
+        if any(short_history_excluded.values()):
+            notes.append('이력 부족 종목은 해당 구간 분모에서 제외; 제외 수: '
+                         + ', '.join(f'{period}일 {short_history_excluded[period]}개'
+                                     for period in (1, 50, 200) if short_history_excluded[period]))
+        limitations = []
+        if unavailable_symbols:
+            limitations.append(f'시세 조회 실패 종목: {", ".join(unavailable_symbols)}')
+        if proxy_symbols:
+            limitations.append(f'5분 봉 종가 대용치 사용: {", ".join(proxy_symbols)}')
+        if split_blocked_symbols:
+            limitations.append(f'분할로 제외한 종목: {", ".join(split_blocked_symbols)}')
         add('시장 폭·참여도', breadth_label, stats, universe.source,
             unit='비율 % / 종목 수', period=window['day'], membership_as_of=membership_as_of,
-            status='partial' if any(stats[f'excluded_{p}'] for p in (1, 50, 200)) or proxy_symbols or split_blocked_symbols else 'available',
-            reason=('구간별 이력 부족; 성공 종목만 분모로 사용' if any(stats[f'excluded_{p}'] for p in (1, 50, 200))
-                    else ('해당일 5분 봉 종가 대용치 또는 분할 제외 종목 포함' if proxy_symbols or split_blocked_symbols else None)),
+            status='partial' if unavailable_symbols or proxy_symbols or split_blocked_symbols else 'available',
+            reason='; '.join(limitations) or None,
             excluded_symbols=excluded, source_kind='etf_holdings_proxy' if spy_proxy else 'secondary',
-            note=membership_note,
+            note='; '.join([*notes, *limitations]) or None,
             constituents=list(members),
             price_basis='Yahoo Close 가격수익률; 현금 분배금 제외; 결측 종가는 당일 마지막 완료 정규장 5분 봉으로 보완',
             intraday_proxy_symbols=proxy_symbols, split_blocked_symbols=split_blocked_symbols,
@@ -350,7 +376,7 @@ def collect_report(provider=None, now=None):
                     seen[title_key] = row
                 accepted += 1
             if not accepted:
-                missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol), '보고 구간 안의 시각·링크 확인 기사 없음; 뉴스 부재를 의미하지 않음')
+                none_found('기업·실적', f'{symbol} 뉴스', quote_url(symbol), '보고 구간 안의 시각·링크 확인 기사 없음; 뉴스 부재를 의미하지 않음')
         except Exception as exc:
             missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol), error_reason(exc))
     checked = list(COMPANIES)
@@ -456,11 +482,8 @@ def collect_report(provider=None, now=None):
     try:
         fred_events = provider.calendar(next_day)
         if not fred_events:
-            add('다음 거래일', 'FRED 선별 미국 주요 발표', None, fred_source,
-                period=window['next_day'], status='partial',
-                reason='선별 대상 미국 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음',
-                note='미국 주요 지표·FOMC release만 선별; FRED 날짜 응답은 발표 시각·최초 공지 시각을 보장하지 않음',
-                information_scope='retrieval_time_schedule')
+            none_found('다음 거래일', 'FRED 선별 미국 주요 발표', fred_source,
+                       '선별 대상 미국 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음')
     except Exception as exc:
         missing('다음 거래일', 'FRED 선별 미국 주요 발표', fred_source, error_reason(exc))
 
@@ -469,11 +492,8 @@ def collect_report(provider=None, now=None):
     try:
         census_events = provider.census_calendar(next_day)
         if not census_events:
-            add('다음 거래일', 'Census 공식 일정 표본', None, census_source,
-                period=window['next_day'], status='partial',
-                reason='선별 Census 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음',
-                note='대상 연도별 Census 경제지표 달력에서 선별 지표를 확인',
-                information_scope='retrieval_time_schedule', schedule_scope='selected_census_releases')
+            none_found('다음 거래일', 'Census 공식 일정 표본', census_source,
+                       '선별 Census 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음')
     except Exception as exc:
         missing('다음 거래일', 'Census 공식 경제 일정', census_source, error_reason(exc))
 
@@ -482,11 +502,8 @@ def collect_report(provider=None, now=None):
     try:
         bea_events = provider.bea_calendar(next_day)
         if not bea_events:
-            add('다음 거래일', 'BEA 공식 일정 표본', None, bea_source,
-                period=window['next_day'], status='partial',
-                reason='공식 공개 일정에서 해당일 선별 발표를 찾지 못함; 전체 일정 부재를 뜻하지 않음',
-                note='BEA GDP·소득·무역 등 선별 일정 확인',
-                information_scope='retrieval_time_schedule', schedule_scope='selected_bea_releases')
+            none_found('다음 거래일', 'BEA 공식 일정 표본', bea_source,
+                       '공식 공개 일정에서 해당일 선별 발표를 찾지 못함; 전체 일정 부재를 뜻하지 않음')
     except Exception as exc:
         missing('다음 거래일', 'BEA 공식 일정', bea_source, error_reason(exc))
 
@@ -541,29 +558,41 @@ def collect_report(provider=None, now=None):
             period=window['next_day'], scheduled_at=scheduled_at, sources=sources,
             related_assets=matches[0][1]['related_assets'], note=note,
             information_scope='retrieval_time_schedule', schedule_scope='selected_official_releases')
-    for symbol in COMPANIES:
+    earnings_checked = list(COMPANIES)
+    earnings_scheduled = []
+    earnings_failed = []
+    for symbol in earnings_checked:
         try:
             dates = provider.earnings(symbol)
-            found = False
             if dates is not None:
                 for stamp in dates.index:
                     stamp = pd.Timestamp(stamp)
                     if stamp.tzinfo is None or stamp.tz_convert(ET).date() != next_day:
                         continue
-                    found = True
+                    if symbol not in earnings_scheduled:
+                        earnings_scheduled.append(symbol)
                     add('다음 거래일', f'{symbol} 실적 예정', symbol, quote_url(symbol),
                         period=window['next_day'], scheduled_at=stamp.isoformat(),
                         related_assets=[symbol], information_scope='retrieval_time_schedule',
                         note='조회 당시 Yahoo 예정 시각; 확정 여부·최초 공지 시점 미확인')
-            if not found:
-                missing('다음 거래일', f'{symbol} 실적 예정', quote_url(symbol), '표본 내 확인된 다음 거래일 일정 없음; 전체 일정 없음이 아님')
-        except Exception as exc:
-            missing('다음 거래일', f'{symbol} 실적 예정', quote_url(symbol), error_reason(exc))
+        except Exception:
+            earnings_failed.append(symbol)
+    earnings_status = ('unavailable' if len(earnings_failed) == len(earnings_checked)
+                       else ('partial' if earnings_failed else 'available'))
+    add('다음 거래일', '표본 다음 거래일 실적 일정 확인', {
+            'checked': earnings_checked, 'scheduled': earnings_scheduled, 'failed': earnings_failed,
+        }, 'https://finance.yahoo.com/calendar/earnings', period=window['next_day'],
+        status=earnings_status,
+        reason=f"Yahoo 조회 실패 종목: {', '.join(earnings_failed)}" if earnings_failed else None,
+        source_kind='secondary',
+        information_scope='retrieval_time_schedule',
+        note='표본 7개 종목의 조회 당시 다음 거래일 실적 예정; 전체 기업 일정은 확인하지 않음')
     policy_source = 'https://www.federalreserve.gov/newsevents/calendar.htm'
     try:
         policies = provider.policy_calendar(next_day)
         if not policies:
-            missing('다음 거래일', 'Fed 정책 일정', policy_source, '공식 월별 페이지에서 확인된 해당일 행사 없음; 추가·변경 일정 확인 필요')
+            none_found('다음 거래일', 'Fed 정책 일정', policy_source,
+                       '공식 월별 페이지에서 확인된 해당일 행사 없음; 추가·변경 일정 확인 필요')
         for event in policies:
             add('다음 거래일', 'Fed: ' + event['title'], event['title'], event['source'],
                 period=window['next_day'], scheduled_at=event['scheduled_at'],
@@ -594,7 +623,7 @@ def quality_warnings(report):
     warnings = []
     cutoff = pd.Timestamp(report['window']['cutoff'])
     for item in report['evidence']:
-        if item['status'] != 'available':
+        if item['status'] not in ('available', 'none_found'):
             warnings.append(f"{item['id']} {item['label']}: {item['reason'] or '자료 부족'}")
         for field in ('observed_at', 'published_at'):
             if item.get(field) and pd.Timestamp(item[field]) > cutoff:
@@ -655,7 +684,9 @@ def write_narrative(report, config=None, llm=None):
 
 LABELS = {'close': '종가', 'return_1d': '1거래일 %', 'return_5d': '5거래일 %', 'return_20d': '20거래일 %',
           'regular_close': '기준 종가', 'post_price': '장후 가격', 'change_pct': '장후 변화 %',
-          'constituents': '구성 종목 수', 'advancing_pct': '상승 %', 'declining_pct': '하락 %', 'unchanged_pct': '보합 %'}
+          'constituents': '구성 종목 수', 'advancing_pct': '상승 %', 'declining_pct': '하락 %', 'unchanged_pct': '보합 %',
+          'checked': '확인 종목', 'scheduled': '일정 확인 종목', 'failed': '조회 실패 종목',
+          'with_8k_2_02': '8-K Item 2.02 확인 종목', 'sec_failed': 'SEC 조회 실패 종목'}
 for _p in (1, 5, 20):
     LABELS[f'relative_{_p}d_pp'] = f'{_p}거래일 상대 성과 %p'
     LABELS[f'rank_{_p}d'] = f'{_p}거래일 순위'
@@ -677,11 +708,11 @@ def render_markdown(report):
     warnings = quality_warnings(report)
     window = report['window']
     status_counts = {status: sum(item['status'] == status for item in report['evidence'])
-                     for status in ('available', 'partial', 'stale', 'unavailable')}
+                     for status in ('available', 'none_found', 'partial', 'stale', 'unavailable')}
     gap_lines = []
     for section in SECTIONS[1:-1]:
         rows = [item for item in report['evidence']
-                if item['section'] == section and item['status'] != 'available']
+                if item['section'] == section and item['status'] in ('partial', 'stale', 'unavailable')]
         if not rows:
             continue
         counts = {status: sum(item['status'] == status for item in rows)
@@ -696,7 +727,8 @@ def render_markdown(report):
              f"**{'불완전 보고서' if warnings else '수집 범위 내 보고서'}**", '',
              f"대상 거래일: {window['day']} · 기준: {window['cutoff']} · 정규장 폐장: {window['close']}",
              f"생성: {window['generated_at']} · 다음 거래일: {window['next_day']}", '',
-             (f"자료 상태: 확인 {status_counts['available']} · 부분 {status_counts['partial']} · "
+             (f"자료 상태: 확인 {status_counts['available']} · 해당 없음 {status_counts['none_found']} · "
+              f"부분 {status_counts['partial']} · "
               f"오래됨 {status_counts['stale']} · 미확인 {status_counts['unavailable']} (근거 항목 기준)"),
              '부분·미확인 항목:', *(gap_lines or ['- 확인된 자료 공백 없음']), '',
              '무료 공개 자료. 현재 구성 종목·고정 기업 표본이며 시장 전체 장후 순위가 아닙니다. 정규장 수익률은 Yahoo Close 가격 기준이며 현금 분배금은 제외합니다. 종가 결측은 가능한 경우 당일 마지막 완료 정규장 5분 봉 대용치로 표시합니다.',
@@ -743,8 +775,9 @@ def render_markdown(report):
                     source_line = f"출처: [원문](<{source}>)" if safe_url(source) else '출처: 확인 불가'
                 if safe_url(item.get('source_api')):
                     source_line += f" · [일정 원자료](<{item['source_api']}>)"
+                status_label = '해당 없음' if item['status'] == 'none_found' else item['status']
                 lines += ['', source_line,
-                          f"단위: {cell(item['unit'])} · 관측 기간: {cell(item['observation_period'])} · 상태: {cell(item['status'])}",
+                          f"단위: {cell(item['unit'])} · 관측 기간: {cell(item['observation_period'])} · 상태: {cell(status_label)}",
                           f"발표: {cell(item['published_at'])} · 조회: {cell(item['retrieved_at'])}"]
                 for key, label in [('observed_at', '가격 관측'), ('scheduled_at', '예정 시각'), ('frequency', '발표 주기'),
                                    ('vintage', '빈티지'), ('membership_as_of', '구성 기준일'), ('related_assets', '관련 자산'), ('reason', '제한'), ('note', '비고')]:

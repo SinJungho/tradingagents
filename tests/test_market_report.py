@@ -116,6 +116,50 @@ def test_breadth_denominators_are_explicit():
     assert mr.breadth_stats({'D': missing})['advancing_pct'] is None
 
 
+def test_breadth_short_history_is_available_but_query_failure_is_partial():
+    provider = FakePublicData()
+    provider.universe = lambda: SimpleNamespace(
+        tickers=('AAA',), source='https://example.com/members',
+        as_of='2026-11-01', as_of_label='membership as of')
+    original = provider.daily
+
+    def short_history(symbol, day):
+        frame = original(symbol, day)
+        return frame.iloc[-3:] if symbol == 'AAA' else frame
+
+    provider.daily = short_history
+    report = mr.collect_report(provider, provider.now)
+    breadth = next(row for row in report['evidence'] if row['label'] == '현재 S&P 500 구성 종목 표본의 시장 폭')
+    assert breadth['status'] == 'available'
+    assert breadth['value']['excluded_50'] == breadth['value']['excluded_200'] == 1
+    assert '이력 부족 종목은 해당 구간 분모에서 제외' in breadth['note']
+    assert '50일 1개' in breadth['note'] and '200일 1개' in breadth['note']
+
+    provider = FakePublicData()
+    provider.universe = lambda: SimpleNamespace(
+        tickers=('AAA',), source='https://example.com/members',
+        as_of='2026-11-01', as_of_label='membership as of')
+    original = provider.daily
+
+    def quote_failure(symbol, day):
+        if symbol == 'AAA':
+            raise RuntimeError('synthetic quote failure')
+        return original(symbol, day)
+
+    provider.daily = quote_failure
+
+    def intraday_failure(symbol, day):
+        if symbol == 'AAA':
+            raise RuntimeError('synthetic quote failure')
+        return FakePublicData.intraday(provider, symbol, day)
+
+    provider.intraday = intraday_failure
+    report = mr.collect_report(provider, provider.now)
+    breadth = next(row for row in report['evidence'] if row['label'] == '현재 S&P 500 구성 종목 표본의 시장 폭')
+    assert breadth['status'] == 'partial'
+    assert breadth['close_source_by_symbol']['AAA'] == 'unavailable'
+
+
 class FakePublicData:
     def __init__(self):
         self.now = datetime.fromisoformat('2026-11-12T20:30:00-05:00')
@@ -249,6 +293,71 @@ def test_no_earnings_day_has_only_available_sample_summary():
     assert summary['value'] == {'checked': list(mr.COMPANIES), 'with_8k_2_02': [], 'sec_failed': []}
     assert not [row for row in per_ticker_earnings if row['status'] != 'available']
     assert not per_ticker_earnings
+
+
+def test_successful_empty_news_and_schedules_are_none_found_and_not_warnings():
+    provider = FakePublicData()
+    provider.news = lambda symbol: []
+    provider.calendar = lambda day: []
+    provider.census_calendar = lambda day: []
+    provider.bea_calendar = lambda day: []
+    provider.policy_calendar = lambda day: []
+    provider.earnings = lambda symbol: pd.DataFrame()
+    report = mr.collect_report(provider, provider.now)
+    rows = report['evidence']
+    empty_labels = ('^GSPC 뉴스', 'FRED 선별 미국 주요 발표', 'Census 공식 일정 표본',
+                    'BEA 공식 일정 표본', 'Fed 정책 일정')
+    none_rows = [row for row in rows if row['label'] in empty_labels]
+    assert len(none_rows) == len(empty_labels)
+    assert all(row['status'] == 'none_found' for row in none_rows)
+    warnings = mr.quality_warnings(report)
+    assert not any(any(warning.startswith(row['id'] + ' ') for warning in warnings) for row in none_rows)
+    assert any(row['label'] == 'BLS·DOL 공식 일정' and row['status'] == 'unavailable' for row in rows)
+    earnings = next(row for row in rows if row['label'] == '표본 다음 거래일 실적 일정 확인')
+    assert earnings['status'] == 'available'
+    assert earnings['value'] == {'checked': list(mr.COMPANIES), 'scheduled': [], 'failed': []}
+    markdown = mr.render_markdown(report)
+    none_count = sum(row['status'] == 'none_found' for row in rows)
+    assert f'해당 없음 {none_count}' in markdown
+    assert '상태: 해당 없음' in markdown
+
+
+def test_news_and_calendar_query_failures_remain_unavailable_and_warn():
+    provider = FakePublicData()
+    provider.news = lambda symbol: (_ for _ in ()).throw(RuntimeError('synthetic news failure'))
+    provider.calendar = lambda day: (_ for _ in ()).throw(RuntimeError('synthetic calendar failure'))
+    report = mr.collect_report(provider, provider.now)
+    news = next(row for row in report['evidence'] if row['label'] == '^GSPC 뉴스')
+    calendar = next(row for row in report['evidence'] if row['label'] == 'FRED 선별 미국 주요 발표')
+    warnings = mr.quality_warnings(report)
+    assert news['status'] == calendar['status'] == 'unavailable'
+    assert any(warning.startswith(news['id'] + ' ') for warning in warnings)
+    assert any(warning.startswith(calendar['id'] + ' ') for warning in warnings)
+
+
+@pytest.mark.parametrize(('failures', 'expected_status'), [
+    ((), 'available'),
+    (('MSFT',), 'partial'),
+    (tuple(mr.COMPANIES), 'unavailable'),
+])
+def test_next_day_earnings_schedule_summary_statuses(failures, expected_status):
+    provider = FakePublicData()
+
+    def earnings(symbol):
+        if symbol in failures:
+            raise RuntimeError('synthetic earnings failure')
+        if symbol == 'AAPL':
+            return pd.DataFrame(index=pd.DatetimeIndex(['2026-11-13T09:00:00-05:00']))
+        return pd.DataFrame()
+
+    provider.earnings = earnings
+    report = mr.collect_report(provider, provider.now)
+    summary = next(row for row in report['evidence'] if row['label'] == '표본 다음 거래일 실적 일정 확인')
+    scheduled = ['AAPL'] if 'AAPL' not in failures else []
+    assert summary['status'] == expected_status
+    assert summary['value'] == {'checked': list(mr.COMPANIES), 'scheduled': scheduled,
+                                'failed': list(failures)}
+    assert ('AAPL 실적 예정' in [row['label'] for row in report['evidence']]) == bool(scheduled)
 
 
 def test_partial_sec_failure_is_recorded_in_sample_summary():
