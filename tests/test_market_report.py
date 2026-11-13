@@ -214,6 +214,11 @@ class FakePublicData:
                  'source_api': 'https://apps.bea.gov/API/signup/release_dates.json',
                  'related_assets': ['미국 주가지수', '미 국채', '달러']}]
 
+    def bls_calendar(self, day):
+        return [{'title': 'Producer Price Index', 'scheduled_at': f'{day}T08:30:00-05:00',
+                 'source': 'https://www.bls.gov/schedule/news_release/bls.ics',
+                 'related_assets': ['미국 주가지수', '미 국채', '달러']}]
+
     def policy_calendar(self, day):
         return [{'title': 'Synthetic speech', 'scheduled_at': f'{day}T14:00:00-05:00', 'source': 'https://example.com/policy', 'time_label': '2:00 p.m.'}]
 
@@ -301,18 +306,19 @@ def test_successful_empty_news_and_schedules_are_none_found_and_not_warnings():
     provider.calendar = lambda day: []
     provider.census_calendar = lambda day: []
     provider.bea_calendar = lambda day: []
+    provider.bls_calendar = lambda day: []
     provider.policy_calendar = lambda day: []
     provider.earnings = lambda symbol: pd.DataFrame()
     report = mr.collect_report(provider, provider.now)
     rows = report['evidence']
     empty_labels = ('^GSPC 뉴스', 'FRED 선별 미국 주요 발표', 'Census 공식 일정 표본',
-                    'BEA 공식 일정 표본', 'Fed 정책 일정')
+                    'BEA 공식 일정 표본', 'BLS 공식 일정 표본', 'Fed 정책 일정')
     none_rows = [row for row in rows if row['label'] in empty_labels]
     assert len(none_rows) == len(empty_labels)
     assert all(row['status'] == 'none_found' for row in none_rows)
     warnings = mr.quality_warnings(report)
     assert not any(any(warning.startswith(row['id'] + ' ') for warning in warnings) for row in none_rows)
-    assert any(row['label'] == 'BLS·DOL 공식 일정' and row['status'] == 'unavailable' for row in rows)
+    assert any(row['label'] == 'DOL 주간 실업수당 일정' and row['status'] == 'unavailable' for row in rows)
     earnings = next(row for row in rows if row['label'] == '표본 다음 거래일 실적 일정 확인')
     assert earnings['status'] == 'available'
     assert earnings['value'] == {'checked': list(mr.COMPANIES), 'scheduled': [], 'failed': []}
@@ -459,7 +465,7 @@ def test_breadth_marks_spy_proxy_date_and_wikipedia_fallback_unknown():
 def test_all_vendor_failures_still_preserve_structure(tmp_path):
     provider = Mock(spec=FakePublicData)
     for name in ('daily', 'universe', 'macro', 'intraday', 'news', 'calendar', 'census_calendar',
-                 'bea_calendar', 'earnings', 'earnings_release', 'policy_calendar'):
+                 'bea_calendar', 'bls_calendar', 'earnings', 'earnings_release', 'policy_calendar'):
         getattr(provider, name).side_effect = RuntimeError('secret credential')
     report = mr.collect_report(provider, datetime.fromisoformat('2026-11-12T20:30:00-05:00'))
     mr.write_narrative(report, llm=Mock(invoke=Mock(side_effect=RuntimeError('llm key'))))
@@ -804,9 +810,15 @@ def test_next_day_calendar_merges_census_time_and_reports_unavailable_agencies(r
     assert gdp[0]['scheduled_at'] == '2026-11-13T08:30:00-05:00'
     assert 'https://www.bea.gov/news/schedule/full' in gdp[0]['sources']
     gaps = [row for row in report['evidence'] if row['status'] == 'unavailable']
-    coverage_gap = next(row for row in gaps if row['label'] == 'BLS·DOL 공식 일정')
-    assert coverage_gap['source'] == 'https://www.bls.gov/schedule/news_release/'
-    assert coverage_gap['reason'] == '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인'
+    ppi = [row for row in report['evidence'] if row['label'] == 'Producer Price Index']
+    assert len(ppi) == 1
+    assert ppi[0]['scheduled_at'] == '2026-11-13T08:30:00-05:00'
+    assert ppi[0]['sources'] == ['https://fred.stlouisfed.org/release?rid=46',
+                                 'https://www.bls.gov/schedule/news_release/bls.ics']
+    assert not any(row['label'].startswith('BLS:') for row in report['evidence'])
+    coverage_gap = next(row for row in gaps if row['label'] == 'DOL 주간 실업수당 일정')
+    assert coverage_gap['source'] == 'https://www.dol.gov/newsroom/releases/eta'
+    assert coverage_gap['reason'] == '자동 수집 대상 아님; 주간 실업수당 발표 시각 미확인'
     assert 'sources' not in coverage_gap
     markdown = mr.render_markdown(report)
     assert '[원문](<https://fred.stlouisfed.org/release?rid=93>)' in markdown
@@ -823,6 +835,76 @@ def test_census_http_403_is_a_report_gap():
     assert gap['status'] == 'unavailable'
     assert gap['reason'] == 'HTTPError'
     assert gap['source'] == 'https://www.census.gov/economic-indicators/calendar-listview-2026.html'
+
+
+def bls_ics(*events):
+    body = ''.join(
+        'BEGIN:VEVENT\r\nUID:synthetic\r\n'
+        f'DTSTART;TZID=US-Eastern:{start}\r\nDURATION:PT0M\r\n{summary}\r\n'
+        'LOCATION:Washington\\, DC\r\nEND:VEVENT\r\n' for start, summary in events)
+    return ('BEGIN:VCALENDAR\r\nX-WR-TIMEZONE:US-Eastern\r\nBEGIN:VTIMEZONE\r\nTZID:US-Eastern\r\n'
+            'BEGIN:STANDARD\r\nDTSTART:20071104T020000\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n'
+            f'{body}END:VCALENDAR\r\n')
+
+
+@pytest.mark.parametrize(('day', 'start', 'expected'), [
+    ('2026-03-06', '20260306T083000', '2026-03-06T08:30:00-05:00'),
+    ('2026-03-09', '20260309T083000', '2026-03-09T08:30:00-04:00'),
+    ('2026-10-30', '20261030T083000', '2026-10-30T08:30:00-04:00'),
+    ('2026-11-02', '20261102T100000', '2026-11-02T10:00:00-05:00'),
+])
+def test_bls_calendar_converts_eastern_time_across_dst(monkeypatch, day, start, expected):
+    calls = []
+    ics = bls_ics((start, 'SUMMARY:Consumer Price Index'))
+    monkeypatch.setattr(market_data, 'get_with_retry', lambda url, **kwargs: (
+        calls.append((url, kwargs)) or SimpleNamespace(content=ics.encode('utf-8'))))
+    events = PublicMarketData().bls_calendar(date.fromisoformat(day))
+    assert [(event['title'], event['scheduled_at']) for event in events] == [('Consumer Price Index', expected)]
+    assert calls[0][0] == 'https://www.bls.gov/schedule/news_release/bls.ics'
+    assert calls[0][1]['provider'] == 'BLS'
+    assert calls[0][1]['headers'] == {'User-Agent': market_data.sec_edgar._user_agent()}
+
+
+def test_bls_calendar_unfolds_lines_and_keeps_selected_releases_only(monkeypatch):
+    ics = bls_ics(
+        ('20261113T083000', 'SUMMARY:Producer Price\r\n  Index'),
+        ('20261113T083000', 'SUMMARY:Producer Price Index'),
+        ('20261113T100000', 'SUMMARY:Metropolitan Area Employment and Unemployment (Monthly)'),
+        ('20261117T083000', 'SUMMARY:U.S. Import and Export Price Indexes'),
+    )
+    monkeypatch.setattr(market_data, 'get_with_retry',
+                        lambda *args, **kwargs: SimpleNamespace(content=ics.encode('utf-8')))
+    provider = PublicMarketData()
+    assert provider.bls_calendar(date(2026, 11, 13)) == [{
+        'title': 'Producer Price Index', 'scheduled_at': '2026-11-13T08:30:00-05:00',
+        'source': 'https://www.bls.gov/schedule/news_release/bls.ics',
+        'related_assets': ['미국 주가지수', '미 국채', '달러']}]
+    assert provider.bls_calendar(date(2026, 11, 16)) == []
+
+
+def test_bls_calendar_http_403_and_bad_format_are_unavailable(monkeypatch):
+    import requests
+
+    from tradingagents.dataflows.market_report import PublicDataError
+
+    def forbidden(*args, **kwargs):
+        raise requests.HTTPError('forbidden')
+
+    monkeypatch.setattr(market_data, 'get_with_retry', forbidden)
+    with pytest.raises(PublicDataError, match='HTTPError'):
+        PublicMarketData().bls_calendar(date(2026, 11, 13))
+    monkeypatch.setattr(market_data, 'get_with_retry',
+                        lambda *args, **kwargs: SimpleNamespace(content=b'<html>blocked</html>'))
+    with pytest.raises(PublicDataError, match='ValueError'):
+        PublicMarketData().bls_calendar(date(2026, 11, 13))
+
+    provider = FakePublicData()
+    provider.bls_calendar = lambda day: (_ for _ in ()).throw(PublicDataError('HTTPError'))
+    report = mr.collect_report(provider, provider.now)
+    gap = next(row for row in report['evidence'] if row['label'] == 'BLS 공식 일정')
+    assert (gap['status'], gap['reason']) == ('unavailable', 'HTTPError')
+    ppi = next(row for row in report['evidence'] if row['label'] == 'Producer Price Index')
+    assert ppi['scheduled_at'] is None
 
 
 def test_missing_fred_key_explained(monkeypatch):

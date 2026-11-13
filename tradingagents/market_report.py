@@ -15,6 +15,7 @@ import pandas as pd
 from markdown_it import MarkdownIt
 
 from tradingagents.dataflows.market_report import (
+    BLS_CALENDAR_URL,
     CENSUS_CALENDAR_URL,
     COMPANIES,
     FUTURES,
@@ -507,12 +508,21 @@ def collect_report(provider=None, now=None):
     except Exception as exc:
         missing('다음 거래일', 'BEA 공식 일정', bea_source, error_reason(exc))
 
-    missing('다음 거래일', 'BLS·DOL 공식 일정',
-            'https://www.bls.gov/schedule/news_release/',
-            '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인')
+    bls_events = []
+    try:
+        bls_events = provider.bls_calendar(next_day)
+        if not bls_events:
+            none_found('다음 거래일', 'BLS 공식 일정 표본', BLS_CALENDAR_URL,
+                       '공식 ICS 일정에서 해당일 선별 발표를 찾지 못함; 전체 일정 부재를 뜻하지 않음')
+    except Exception as exc:
+        missing('다음 거래일', 'BLS 공식 일정', BLS_CALENDAR_URL, error_reason(exc))
+
+    missing('다음 거래일', 'DOL 주간 실업수당 일정',
+            'https://www.dol.gov/newsroom/releases/eta',
+            '자동 수집 대상 아님; 주간 실업수당 발표 시각 미확인')
 
     official_by_name = {}
-    for agency, events in (('Census', census_events), ('BEA', bea_events)):
+    for agency, events in (('Census', census_events), ('BEA', bea_events), ('BLS', bls_events)):
         for event in events:
             official_by_name.setdefault(release_key(event['title']), []).append((agency, event))
     matched_official = set()
@@ -550,7 +560,7 @@ def collect_report(provider=None, now=None):
         sources = [source for _, item in matches
                    for source in (item.get('source'), item.get('source_api')) if source]
         source = matches[0][1]['source']
-        agency_label = 'Census' if agencies == {'Census'} else ('BEA' if agencies == {'BEA'} else '미국 기관')
+        agency_label = next(iter(agencies)) if len(agencies) == 1 else '미국 기관'
         note = ('공식 기관 일정의 시각이 서로 달라 시각 미확인으로 유지' if len(official_times) > 1 else
                 ('공식 기관 일정의 예정 시각; 조회 당시 일정이며 변경될 수 있음' if scheduled_at else
                  '공식 기관 일정에서 날짜만 확인; 시각 미확인'))
