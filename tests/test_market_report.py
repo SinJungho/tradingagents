@@ -257,7 +257,8 @@ def test_collection_bounds_sources_and_dedup(report):
     assert len(news[0]['symbols']) > 1
     encoded = json.dumps(report)
     assert 'Future secret' not in encoded and 'Undated secret' not in encoded
-    assert '9999' not in encoded
+    # The sentinel serializes as 9999.0; bare '9999' also matches retrieved_at microseconds.
+    assert '9999.0' not in encoded
     futures = next(r for r in rows if r['label'].startswith('ES=F'))
     assert futures['value'] == {'regular_close': 100., 'post_price': 102., 'change_pct': pytest.approx(2)}
     assert pd.Timestamp(futures['observed_at']) <= pd.Timestamp(report['window']['cutoff'])
