@@ -55,7 +55,7 @@ def _unavailable_message(topic: str) -> str:
 
 def transport_target(config=None):
     config = get_config() if config is None else config
-    mode = validate_polymarket_transport(config.get("polymarket_transport", "direct"))
+    mode = validate_polymarket_transport(config.get("polymarket_transport", "cloudfront_alias"))
     if mode == "direct":
         return GAMMA_BASE, {}
     try:
@@ -89,7 +89,7 @@ def probe_transport(config):
 
 def _request(path: str, params: dict) -> dict:
     base, headers = transport_target()
-    mode = get_config().get("polymarket_transport", "direct")
+    mode = get_config().get("polymarket_transport", "cloudfront_alias")
     response = get_with_retry(
         f"{base}/{path}",
         params=params,
@@ -188,7 +188,7 @@ def get_prediction_markets(topic: str, limit: int | None = None, as_of_date: str
     except requests.RequestException as e:
         logger.warning(
             "API fetch failed provider=Polymarket mode=%s category=%s status=%s",
-            get_config().get("polymarket_transport", "direct"),
+            get_config().get("polymarket_transport", "cloudfront_alias"),
             classify_api_failure(e).category,
             getattr(e, "status_code", None),
         )

@@ -27,6 +27,8 @@ def response(status=200):
 
 def test_default_env_and_programmatic_validation(monkeypatch):
     monkeypatch.delenv("TRADINGAGENTS_POLYMARKET_TRANSPORT", raising=False)
+    assert build_default_config()["polymarket_transport"] == "cloudfront_alias"
+    monkeypatch.setenv("TRADINGAGENTS_POLYMARKET_TRANSPORT", "direct")
     assert build_default_config()["polymarket_transport"] == "direct"
     monkeypatch.setenv("TRADINGAGENTS_POLYMARKET_TRANSPORT", "cloudfront_alias")
     assert build_default_config()["polymarket_transport"] == "cloudfront_alias"
@@ -37,6 +39,25 @@ def test_default_env_and_programmatic_validation(monkeypatch):
         set_config({"polymarket_transport": "typo"})
     with pytest.raises(ValueError), run_config({"polymarket_transport": "typo"}):
         pass
+
+
+def test_missing_transport_config_uses_alias():
+    with patch.object(poly.socket, "getaddrinfo", return_value=records()) as dns:
+        assert poly.transport_target({}) == (
+            f"https://{ALIAS}", {"Host": "gamma-api.polymarket.com"},
+        )
+    dns.assert_called_once()
+
+
+def test_default_request_uses_alias(monkeypatch):
+    monkeypatch.delenv("TRADINGAGENTS_POLYMARKET_TRANSPORT", raising=False)
+    config = build_default_config()
+    with run_config(config), patch.object(
+        poly.socket, "getaddrinfo", return_value=records()
+    ), patch("tradingagents.dataflows.net.requests.get", return_value=response()) as get:
+        assert poly._request("public-search", {"q": "synthetic"}) == {"events": []}
+    assert get.call_args.args[0] == f"https://{ALIAS}/public-search"
+    assert get.call_args.kwargs["headers"] == {"Host": "gamma-api.polymarket.com"}
 
 
 @pytest.mark.parametrize("mode", ["direct", "cloudfront_alias"])

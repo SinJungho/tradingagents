@@ -281,7 +281,7 @@ def worker_network_policy(
 
     for label, url in sorted(selected_endpoints | set(_ALWAYS_USED_DATA_ENDPOINTS)):
         add(label, url)
-    if "polymarket" in selected_vendors and active_config.get("polymarket_transport", "direct") == "cloudfront_alias":
+    if "polymarket" in selected_vendors and active_config.get("polymarket_transport", "cloudfront_alias") == "cloudfront_alias":
         try:
             alias, _ = transport_target(active_config)
             add("Polymarket cloudfront_alias", alias)
@@ -428,7 +428,7 @@ def diagnose_runtime(
         lines.append(f"- {label}: {check(url)}")
 
     lines.append("- Polymarket 공식 direct: 위 Polymarket 결과는 HEAD 도달성; 검색 GET 미검증")
-    if active_config.get("polymarket_transport", "direct") == "cloudfront_alias":
+    if active_config.get("polymarket_transport", "cloudfront_alias") == "cloudfront_alias":
         try:
             result = _probe_status(probe_transport(active_config))
         except (requests.RequestException, ValueError) as error:

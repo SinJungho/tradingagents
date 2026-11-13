@@ -49,10 +49,18 @@
 - **THEN** 오류를 `get_prediction_markets` 실패로 기록하고 추정하지 말라는 명시적 안내를 반환한다
 
 ### Requirement: Polymarket 선택형 별칭 연결
-시스템 MUST 공개 검색에만 기본 direct 또는 cloudfront_alias 연결을 사용하고 잘못된 설정은 오류로 처리해야 한다. 별칭은 시스템 resolver의 공식 호스트 canonical name에서 얻은 유효한 cloudfront.net 하위 DNS 이름이어야 한다. 별칭 HTTPS URL과 TLS SNI를 사용하고 HTTP Host는 공식 호스트를 유지해야 한다. 인증서 검증을 켜고 리다이렉트를 거부하며 30초 timeout, 최대 3회 HTTP 시도와 실행 단위 회로 차단기를 유지해야 한다. 경로 자동 전환은 금지한다.
+시스템 MUST 전송 설정이 없을 때 Polymarket 공개 검색에 `cloudfront_alias`를 사용해야 한다. `direct`는 명시 설정된 경우에만 사용해야 한다. 잘못된 설정은 오류로 처리해야 한다. 별칭은 시스템 resolver의 공식 호스트 canonical name에서 얻은 유효한 cloudfront.net 하위 DNS 이름이어야 한다. 별칭 HTTPS URL과 TLS SNI를 사용하고 HTTP Host는 공식 호스트를 유지해야 한다. 인증서 검증을 켜고 리다이렉트를 거부하며 30초 timeout, 최대 3회 HTTP 시도와 실행 단위 회로 차단기를 유지해야 한다. 경로 자동 전환은 금지한다.
+
+#### Scenario: 기본 별칭 경로
+- **WHEN** 전송 방식이 명시되지 않은 상태에서 Polymarket 공개 검색을 요청할 때
+- **THEN** 시스템은 CloudFront 별칭 URL을 사용하고 별칭 인증서를 검증하며 공식 Host로 공개 검색을 요청한다
+
+#### Scenario: direct 명시 선택
+- **WHEN** 사용자가 `polymarket_transport`를 `direct`로 명시할 때
+- **THEN** 시스템은 공식 Gamma API 호스트로 공개 검색을 요청한다
 
 #### Scenario: 별칭 선택
-- **WHEN** cloudfront_alias를 선택하고 유효한 별칭을 얻을 때
+- **WHEN** `cloudfront_alias`가 명시되고 유효한 별칭을 얻을 때
 - **THEN** 별칭 인증서를 검증하고 공식 Host로 공개 검색을 요청한다
 
 #### Scenario: 별칭 또는 TLS 실패
