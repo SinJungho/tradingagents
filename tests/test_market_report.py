@@ -403,10 +403,11 @@ def test_next_day_calendar_merges_census_time_and_reports_unavailable_agencies(r
     assert len(gdp) == 1
     assert gdp[0]['scheduled_at'] == '2026-11-13T08:30:00-05:00'
     assert 'https://www.bea.gov/news/schedule/full' in gdp[0]['sources']
-    gaps = {row['label']: row for row in report['evidence'] if row['status'] == 'unavailable'}
-    assert 'HTTP 403' in gaps['BLS 경제 일정']['reason']
-    assert 'HTTP 403' in gaps['DOL 주간 실업수당 일정']['reason']
-    assert '일정·시각 없음' in gaps['DOL 주간 실업수당 일정']['reason']
+    gaps = [row for row in report['evidence'] if row['status'] == 'unavailable']
+    coverage_gap = next(row for row in gaps if row['label'] == 'BLS·DOL 공식 일정')
+    assert coverage_gap['source'] == 'https://www.bls.gov/schedule/news_release/'
+    assert coverage_gap['reason'] == '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인'
+    assert 'sources' not in coverage_gap
     markdown = mr.render_markdown(report)
     assert '[원문](<https://fred.stlouisfed.org/release?rid=93>)' in markdown
     assert '[원문](<https://www.census.gov/economic-indicators/calendar-listview-2026.html>)' in markdown

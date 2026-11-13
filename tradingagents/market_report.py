@@ -414,18 +414,9 @@ def collect_report(provider=None, now=None):
     except Exception as exc:
         missing('다음 거래일', 'BEA 공식 일정', bea_source, error_reason(exc))
 
-    bls_ics = 'https://www.bls.gov/schedule/news_release/bls.ics'
-    bls_html = 'https://www.bls.gov/schedule/2026_sched.htm'
-    add('다음 거래일', 'BLS 경제 일정', None, bls_ics,
-        period=window['next_day'], status='unavailable',
-        reason='코디네이터 확인(2026-11-13): ICS와 HTML 일정 모두 HTTP 403; BLS 일정 공백',
-        sources=[bls_ics, bls_html], information_scope='retrieval_time_schedule')
-    dol_news = 'https://www.dol.gov/newsroom/releases/eta'
-    dol_data = 'https://www.dol.gov/ui/data.pdf'
-    add('다음 거래일', 'DOL 주간 실업수당 일정', None, dol_news,
-        period=window['next_day'], status='unavailable',
-        reason='코디네이터 확인(2026-11-13): 보도자료 URL HTTP 403; UI PDF는 HTTP 200이나 주간 보고서로 일정·시각 없음',
-        sources=[dol_news, dol_data], information_scope='retrieval_time_schedule')
+    missing('다음 거래일', 'BLS·DOL 공식 일정',
+            'https://www.bls.gov/schedule/news_release/',
+            '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인')
 
     official_by_name = {}
     for agency, events in (('Census', census_events), ('BEA', bea_events)):
