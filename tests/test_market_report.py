@@ -56,6 +56,23 @@ def test_public_market_data_prefers_spy_and_falls_back_to_wikipedia(monkeypatch)
     fetch_wikipedia.assert_called_once_with("sp500")
 
 
+@pytest.mark.parametrize(('symbol', 'expected'), [
+    ('BRK.B', 'BRK-B'),
+    ('BF.B', 'BF-B'),
+    ('DX-Y.NYB', 'DX-Y.NYB'),
+    ('^GSPC', '^GSPC'),
+    ('CL=F', 'CL=F'),
+    ('AAPL', 'AAPL'),
+])
+def test_ticker_converts_only_class_share_symbols(monkeypatch, symbol, expected):
+    ticker = object()
+    requested = []
+    monkeypatch.setattr(market_data.yf, 'Ticker', lambda value: requested.append(value) or ticker)
+
+    assert PublicMarketData().ticker(symbol) is ticker
+    assert requested == [expected]
+
+
 def test_return_alignment_uses_close_and_preserves_missing_sessions():
     dates = pd.bdate_range('2026-10-01', periods=21)
     frame = pd.DataFrame({'Close': range(200, 221), 'Adj Close': range(100, 121)}, index=dates)

@@ -103,7 +103,8 @@ class PublicMarketData:
 
     def ticker(self, symbol):
         if symbol not in self._tickers:
-            self._tickers[symbol] = yf.Ticker(symbol.replace('.', '-'))
+            yahoo_symbol = symbol.replace('.', '-') if re.fullmatch(r'[A-Z]+\.[A-Z]', symbol) else symbol
+            self._tickers[symbol] = yf.Ticker(yahoo_symbol)
         return self._tickers[symbol]
 
     def daily(self, symbol, day):
