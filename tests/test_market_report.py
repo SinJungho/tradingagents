@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from cli.main import app
 from tradingagents import market_report as mr
+from tradingagents.dataflows import market_report as market_data
 from tradingagents.dataflows.market_report import PublicMarketData
 
 
@@ -134,6 +135,13 @@ def report():
 
 def test_collection_bounds_sources_and_dedup(report):
     rows = report['evidence']
+    dxy = next(r for r in rows if r['label'] == '미 달러 지수')
+    broad_dollar = next(r for r in rows if r['label'] == '무역가중 미 달러 지수(광의, 명목)')
+    assert dxy['unit'] == '지수'
+    assert dxy['source'] == 'https://finance.yahoo.com/quote/DX-Y.NYB/'
+    assert broad_dollar['source'] == 'https://fred.stlouisfed.org/series/DTWEXBGS'
+    assert dxy['label'] != broad_dollar['label']
+    assert dxy['source'] != broad_dollar['source']
     news = [r for r in rows if r['label'] == 'Confirmed catalyst']
     assert len(news) == 1
     assert len(news[0]['symbols']) > 1
@@ -269,6 +277,80 @@ def test_provider_cache_includes_failures():
         with pytest.raises(ValueError, match='RuntimeError'):
             provider._once(('bad',), broken)
     assert broken.call_count == 1
+
+
+def test_dtwexbgs_macro_uses_synthetic_fred_metadata(monkeypatch):
+    day = datetime(2026, 11, 12).date()
+    monkeypatch.setattr(market_data.fred, '_fred_today', lambda: '2026-11-13')
+
+    def request(endpoint, params):
+        if endpoint == 'series':
+            return {'seriess': [{'units': 'Index Jan 2006=100, Not Seasonally Adjusted', 'frequency': 'Daily'}]}
+        assert endpoint == 'series/observations'
+        assert params['realtime_start'] == '2026-11-11'
+        return {'observations': [{'date': '2026-11-06', 'value': '121.8803'}]}
+
+    monkeypatch.setattr(market_data.fred, '_request', request)
+    data = PublicMarketData().macro('DTWEXBGS', day)
+    assert data == {
+        'value': 121.8803,
+        'period': '2026-11-06',
+        'unit': 'Index Jan 2006=100, Not Seasonally Adjusted',
+        'frequency': 'Daily',
+        'vintage': '2026-11-11',
+    }
+
+
+def test_dtwexbgs_is_distinct_and_survives_yahoo_dxy_failure():
+    provider = FakePublicData()
+    provider.macro = lambda series, day: {
+        'value': 121.8803, 'period': '2026-11-06',
+        'unit': 'Index Jan 2006=100, Not Seasonally Adjusted',
+        'frequency': 'Daily', 'vintage': (day - timedelta(days=1)).isoformat(),
+    }
+    original_intraday = provider.intraday
+
+    def intraday(symbol, day):
+        if symbol == 'DX-Y.NYB':
+            raise RuntimeError('synthetic Yahoo failure')
+        return original_intraday(symbol, day)
+
+    provider.intraday = intraday
+    report = mr.collect_report(provider, provider.now)
+    dxy = next(row for row in report['evidence'] if row['label'] == '미 달러 지수')
+    broad = next(row for row in report['evidence'] if row['label'] == '무역가중 미 달러 지수(광의, 명목)')
+    assert dxy['status'] == 'unavailable'
+    assert dxy['unit'] is None
+    assert broad['status'] == 'available'
+    assert broad['value'] == 121.8803
+    assert broad['unit'] == 'Index Jan 2006=100, Not Seasonally Adjusted'
+    assert broad['observation_period'] == '2026-11-06'
+    assert broad['vintage'] == '2026-11-11'
+    assert broad['frequency'] == 'Daily'
+    assert broad['source'] == 'https://fred.stlouisfed.org/series/DTWEXBGS'
+    assert dxy['label'] != broad['label']
+    assert dxy['source'] != broad['source']
+
+
+def test_dtwexbgs_weekly_h10_delay_uses_existing_max_age():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-13T20:30:00-05:00')
+
+    def macro_for(period):
+        provider.macro = lambda series, day: {
+            'value': 121.8803, 'period': period,
+            'unit': 'Index Jan 2006=100, Not Seasonally Adjusted',
+            'frequency': 'Daily', 'vintage': (day - timedelta(days=1)).isoformat(),
+        }
+        report = mr.collect_report(provider, provider.now)
+        return next(row for row in report['evidence'] if row['label'] == '무역가중 미 달러 지수(광의, 명목)')
+
+    within_week = macro_for('2026-11-06')
+    beyond_max_age = macro_for('2026-11-02')
+    assert within_week['status'] == 'available'
+    assert within_week['observation_period'] == '2026-11-06'
+    assert beyond_max_age['status'] == 'stale'
+    assert beyond_max_age['observation_period'] == '2026-11-02'
 
 
 def test_cli_no_llm_and_help(monkeypatch, report, tmp_path):
