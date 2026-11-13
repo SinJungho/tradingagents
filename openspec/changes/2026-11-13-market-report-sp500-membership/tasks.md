@@ -1,19 +1,23 @@
 # Tasks
 
-## 1. 출처 조사 관문
+## 1. 출처 확인
 
-- [x] S&P DJI 공개 자료 범위와 데이터 서비스 접근 조건을 확인한다.
-- [ ] IVV 보유 종목 CSV의 현재 응답 형식, 보유 기준일, 주식 행 수를 HTTP GET으로 확인한다.
+- [x] 코디네이터 확인(2026-11-13): [IVV CSV](https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund)와 [IWM CSV](https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund)는 HTTP 200이지만 CSV 대신 약 2.3 MB 상품 HTML을 반환하며 페이지에서 CSV 링크를 찾지 못했다. 기존 IWM 발굴 경로는 이번 변경 범위에서 수정하지 않는다.
+- [x] 코디네이터 확인(2026-11-13): S&P DJI 전체 구성 목록은 구독이 필요하여 범위 밖이다.
+- [x] 코디네이터 확인(2026-11-13): [SPDR SPY 일별 보유 XLSX](https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx)는 HTTP 200, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`를 반환한다. 2026-11-11 기준일의 표에서 헤더 뒤 Ticker가 있는 행은 504개다.
 
-### 조사 결과
+## 2. 구현
 
-- S&P DJI의 [S&P 500 지수 페이지](https://www.spglobal.com/spdji/en/indices/equity/sp-500/)는 웹 검색으로 확인했을 때 상위 10개 구성 종목과 `Full Constituents List` 항목을 표시한다. 다만 이 워크트리에서 공개 URL에 직접 GET을 시도했을 때 HTTP 상태는 `000`이었으며, 전체 목록 버튼이 비로그인 상태에서 완전한 구성 자료를 제공하는지 확인하지 못했다. 검색 도구가 읽은 페이지에는 `As of Aug 31, 2026` 문구가 있었지만 캐시 화면의 표시라 현재 응답의 기준일로 간주하지 않는다.
-- S&P DJI의 [API 데이터 안내](https://www.spglobal.com/spdji/en/landing/topic/api-data-solutions/)는 지수 종가 데이터에 구성 종목 자료를 포함한다고 설명하고, 데이터 패키지를 구독형으로 안내한다. API 접근에는 S&P DJI Data Services 계정과 인증 토큰이 필요하다고 명시한다. 따라서 자동 수집에 쓸 수 있는 무료 공식 전체 구성 파일은 확인하지 못했다.
-- 요청된 [iShares IVV 보유 종목 CSV](https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund)는 GET 시도에서 HTTP `000`으로 연결되지 않았다. 응답 형식, `Fund Holdings as of` 날짜, 주식 행 수는 모두 확인 불가다.
-- 조사 도구의 네트워크 제약 때문에 IVV 대용 출처가 무료 공개되고 예상 행 수를 충족하는지 입증하지 못했다. 지시된 출처 조사 관문에 따라 구현을 보류하고, 이 조사 기록만 커밋한다.
+- [x] 표준 라이브러리 `zipfile`과 `xml.etree`로 SPY XLSX를 파싱하고 날짜·티커 수·티커 형식을 검증한다.
+- [x] 시장 보고서 `universe()`에서 SPY 보유 자료를 먼저 사용하고 실패하면 기존 Wikipedia 현재 구성 경로로 대체한다.
+- [x] 시장 폭 evidence와 Markdown에 SPY 대용치 종류, 공식 구성 아님 안내, 구성 기준일을 표시하고 Wikipedia 대체 시 기준일을 미확인으로 둔다.
+- [x] SPY 파서, 범위 밖 행 수, 소스 대체, evidence·Markdown 기준일을 합성 자료 테스트로 확인한다.
 
-## 2. 구현 보류
+## 3. 검증
 
-- [ ] IVV CSV 파서와 S&P 500 시장 보고서 대용 구성 흐름을 구현한다.
-- [ ] Wikipedia 대체 경로, 보고서 evidence 및 Markdown 구성 기준일을 검증한다.
-- [ ] 관련 테스트, 전체 테스트, Ruff, OpenSpec strict 검증을 실행한다.
+- [x] 관련 테스트: 55 passed.
+- [x] 전체 pytest: 1791 passed, 2 skipped, 103 subtests passed.
+- [x] Ruff: `ruff check .` 통과.
+- [ ] OpenSpec strict 검증 (샌드박스 미실행; 코디네이터 병합 시 실행)
+
+전체 테스트의 두 skip은 Ruff가 checkout/PATH에 없어서 생긴 agent-hook skip, 선택 의존성 `langchain_aws`가 설치되지 않아 생긴 provider skip이다. OpenSpec CLI는 샌드박스 오프라인 npm 캐시에 없어 strict 검증을 실행하지 못했다 (`ENOTCACHED`).
