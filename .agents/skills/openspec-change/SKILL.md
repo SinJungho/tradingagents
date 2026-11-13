@@ -46,3 +46,12 @@ npx --offline @fission-ai/openspec archive <name> --yes
 - 변경 하나당 커밋 하나. 한 파일에 여러 변경이 섞이면 해당 hunk만 나눠 staging한다.
 - 메시지는 `feat|fix|docs|chore: 간결한 한국어 요약` + 본문 + 저장소 attribution 규칙.
 - 커밋을 여러 개 만들었으면 임시 worktree에서 커밋마다 전체 테스트를 돌려 중간 커밋도 통과하는지 확인한다.
+
+## 7. Orca Worker로 나눠 진행할 때 (사용자가 요청한 경우)
+
+- Worker 워크트리는 커밋에서 갈라지므로 미커밋 변경은 전달되지 않는다. 시작 전에 기준 커밋을 만든다(사용자 승인 필요).
+- 같은 파일·같은 spec 요구사항을 두 Worker가 고치지 않게 나눈다. 겹치면 하나를 병합한 뒤 다음 Worker를 시작한다.
+- 워크트리에는 `.venv`가 없다. 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인하게 한다.
+- Codex Worker 샌드박스에는 네트워크와 npm 오프라인 캐시가 없을 수 있다. 외부 출처의 HTTP 상태·형식·기준일은 코디네이터가 확인해 spec에 넣고, `openspec validate --strict`·아카이브는 코디네이터가 병합 때 실행한다.
+- strict 검증은 요구사항 본문 500자 초과 경고도 실패로 처리한다. spec에 미리 적는다.
+- 병합마다 전체 검증(실패 시 즉시 중단되게 `set -o pipefail`) → 아카이브 → `orchestration worker-stop` → `orca worktree rm --worktree path:<경로> --delete-branch` 순서로 정리한다.
