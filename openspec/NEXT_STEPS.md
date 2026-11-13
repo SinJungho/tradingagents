@@ -9,18 +9,18 @@
 - 최근 검증: pytest 1,829 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 17개 통과.
 - 실제 공개 자료 `market-report --no-llm`(2026-11-12 보고): "수집 범위 내 보고서". DXY 103.20, 11-13 PPI 08:30(BLS) 표시. 주간 실업수당 발표 시각 미수집은 머리말 고정 안내로 옮겨 품질 경고에서 뺐다.
 - 통합 테스트 후속 수정(2026-11-13): `discover` 단독 구간 실패 시 원인 문구를 표시하고, 매일 날짜가 잡히는 FRED 'FOMC Press Release'(일간 목표금리 시계열)를 다음 거래일 일정에서 뺐다.
+- 실측(2026-11-13): 실제 구간 목록에서 지수 구간 5개(Russell 2000 실패)는 2,627개 항목·고유 1,660개라 재사용으로 중복 점수 계산 967회(37%)를 피한다. FRED 선별 목록을 실제 발표명에 맞췄다(FOMC 의사록·Beige Book·G.17은 Fed 일정, 내구재는 Census 일정이 시각과 함께 제공).
 - 결정 기록(2026-11-13): Russell 2000은 무료 대체 출처가 없어 실패 표시를 유지한다. 실적 공시 표본은 7개를 유지한다.
 
 ## 우선순위
 
 | 우선순위 | 후속 작업 | 근거 | 규모 | 사용자 결정 |
 | --- | --- | --- | --- | --- |
-| 1 | Russell 2000 출처 재확인 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(Vanguard·SSGA·FTSE Russell 무료 대체 없음). iShares 응답이 복구되는지 주기적으로 확인한다. | 작음 | 유료 출처는 범위 밖 |
-| 2 | Worker 환경 | Orca 저장소 setup 스크립트가 비어 있어 워크트리에 `.venv`가 없고(앱 설정에서만 변경 가능), Codex 샌드박스에는 네트워크·npm 캐시가 없다. 현재 우회 절차는 `openspec-change` 스킬 7절에 기록했다. | 작음 | 앱 설정·샌드박스 정책 변경 여부 |
-| 3 | FRED 선별 목록의 미일치 이름 | 2026-11-13 확인: `FRED_US_RELEASES` 중 beige book, durable goods, fomc meeting minutes, industrial production and capacity utilization, new home sales는 FRED 발표명과 일치하지 않아 한 번도 선별되지 않는다. 실제 FRED 발표명으로 고칠지, 기관 공식 일정(Fed·Census)에 맡기고 뺄지 정리 필요. durable goods·new home sales는 Census 일정으로 수집되는 것을 확인했고, beige book·fomc meeting minutes·industrial production이 Fed 공식 일정 경로에 잡히는지는 미확인이다. | 작음 | 불필요 |
+| 1 | Russell 2000 출처 재확인 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(2026-11-13 오후 재확인도 동일)(Vanguard·SSGA·FTSE Russell 무료 대체 없음). iShares 응답이 복구되는지 주기적으로 확인한다. | 작음 | 유료 출처는 범위 밖 |
+| 2 | 종목 발굴 분할 조회 병목 | 2026-11-13 실측(`discover --universe sp500`, 503종목): 첫 실행 718초(가격 166·SEC 200·분할 349초), 재실행 288초(가격 7·SEC 13·분할 266초). 가격·SEC는 디스크 캐시로 줄지만 Yahoo 분할 조회는 캐시 없이 종목마다 순차 호출돼 재실행 시간의 92%를 차지한다. 분할 결과 캐시 또는 병렬화 검토. | 중간 | 불필요 |
+| 3 | Worker 환경 설정 | Orca 저장소 setup 스크립트에 `uv venv -q .venv && uv pip install -q --python .venv/bin/python -e '.[dev]'`를 넣으면 워크트리별 venv가 생긴다(임시 워크트리에서 약 2초·전체 pytest 통과 확인). Orca 앱 설정에서만 바꿀 수 있다. Codex 샌드박스 OpenSpec 실행법은 `openspec-change` 스킬 7절에 기록했다. 샌드박스 외부 네트워크는 열지 않고 코디네이터가 출처를 확인한다. | 작음 | Orca 앱 설정 반영 여부 |
 | 대기 | E3 집 네트워크에서 Polymarket 공개 GET 검증 | 활성 변경안의 마지막 미완료 작업. 집 네트워크 접근 불가. | 작음 | 환경이 가능해진 뒤 실행 필요 |
-| 대기 | 시장 발굴 실제 실행 시간 계측 | 종목 발굴 재사용 평가는 합성 자료 기준이다. | 중간 | 공개 시세 접근 환경에서 측정 |
 
 ## 다음 시작점
 
-남은 코드 작업은 FRED 선별 목록의 미일치 이름 정리(작음)뿐이다. iShares 응답 복구 여부를 주기적으로 확인하고, Worker 환경 설정 변경 여부를 결정한다. 기능 변경은 OpenSpec 변경안과 검증 기준을 먼저 작성한다.
+종목 발굴의 분할 조회 병목(캐시 또는 병렬화)이 다음 코드 작업이다. OpenSpec 변경안과 검증 기준을 먼저 작성한다. Orca setup 스크립트 반영은 사용자가 앱 설정에서 결정한다.
