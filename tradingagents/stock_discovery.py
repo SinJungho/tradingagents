@@ -837,13 +837,13 @@ def discover_market(
         except MarketUniverseError as exc:
             if all_sections or "us-listed" in selected or requested_cap_keys:
                 raise
-            source_failures.append(("US exchange listings", type(exc).__name__))
+            source_failures.append(("US exchange listings", str(exc)))
 
         if listing_universe:
             try:
                 market_caps, market_cap_as_of = fetch_market_cap_snapshot()
             except MarketUniverseError as exc:
-                source_failures.append(("Yahoo Finance market-cap screener", type(exc).__name__))
+                source_failures.append(("Yahoo Finance market-cap screener", str(exc)))
                 if requested_cap_keys:
                     market_caps = {}
                     if not include_size_sections:
@@ -904,9 +904,10 @@ def discover_market(
         try:
             sections.append(fetch_index_universe(key))
         except (MarketUniverseError, Nasdaq100UniverseError) as exc:
-            source_failures.append((key, type(exc).__name__))
+            # Universe errors carry fixed, credential-free text; show the cause, not just the type.
+            source_failures.append((key, str(exc)))
             if not all_sections and len(selected) == 1:
-                raise MarketUniverseError(f"{key} universe failed ({type(exc).__name__})") from None
+                raise MarketUniverseError(f"{key} universe failed: {exc}") from None
 
     if not sections:
         raise MarketUniverseError("no requested market section could be loaded")

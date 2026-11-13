@@ -504,9 +504,20 @@ def test_combined_market_discovery_keeps_loaded_sections_when_one_source_fails(m
     result = stock_discovery.discover_market(["sp500", "russell2000"])
 
     assert [section.name for section in result.sections] == ["S&P 500"]
-    assert result.source_failures == (("russell2000", "MarketUniverseError"),)
-    assert "russell2000: MarketUniverseError" in result.render()
+    assert result.source_failures == (("russell2000", "synthetic source failure"),)
+    assert "russell2000: synthetic source failure" in result.render()
     assert [entry.ticker for entry in result.tickers] == ["AAA"]
+
+
+@pytest.mark.unit
+def test_single_market_section_failure_reports_its_cause(monkeypatch):
+    def fetch_index(_key):
+        return stock_discovery.parse_iwm_holdings("<!DOCTYPE html><html></html>")
+
+    monkeypatch.setattr(stock_discovery, "fetch_index_universe", fetch_index)
+    with pytest.raises(stock_discovery.MarketUniverseError,
+                       match="russell2000 universe failed: Russell 2000 source returned an HTML page"):
+        stock_discovery.discover_market(["russell2000"])
 
 
 @pytest.mark.unit
@@ -535,8 +546,8 @@ def test_all_market_discovery_records_russell_html_failure_and_continues(monkeyp
 
     result = stock_discovery.discover_market(["all"])
 
-    assert result.source_failures == (("russell2000", "MarketUniverseError"),)
-    assert "russell2000: MarketUniverseError" in result.render()
+    assert result.source_failures == (("russell2000", "Russell 2000 source returned an HTML page instead of the holdings CSV"),)
+    assert "russell2000: Russell 2000 source returned an HTML page instead of the holdings CSV" in result.render()
     assert "Russell 2000" not in [section.name for section in result.sections]
     assert "sp600" in [section.name for section in result.sections]
     assert [entry.ticker for entry in result.tickers] == ["AAA", "BBB"]
