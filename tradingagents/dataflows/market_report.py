@@ -24,16 +24,28 @@ COMPANIES = ('AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA')
 MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS10': '10년 국채금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
 BEA_RELEASES_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
 BEA_SCHEDULE_URL = 'https://www.bea.gov/news/schedule/full'
+CENSUS_CALENDAR_URL = 'https://www.census.gov/economic-indicators/calendar-listview-{year}.html'
 FRED_US_RELEASES = frozenset({
     'consumer price index', 'employment situation', 'employment cost index',
     'job openings and labor turnover survey', 'producer price index',
     'gross domestic product', 'personal income and outlays',
     'advance monthly sales for retail and food services',
     'industrial production and capacity utilization', 'new residential construction',
-    'new home sales', 'durable goods', 'unemployment insurance weekly claims report',
+    'new home sales', 'durable goods', 'u.s. international trade in goods and services',
+    'unemployment insurance weekly claims report',
     'state unemployment insurance weekly claims report', 'fomc press release',
     'fomc meeting minutes', 'beige book', 'monthly treasury statement',
 })
+CENSUS_US_RELEASES = frozenset({
+    'advance monthly retail trade', 'advance monthly sales for retail and food services',
+    'new residential construction', 'new residential sales',
+    'advance report on durable goods', 'u.s. international trade in goods and services',
+})
+CENSUS_FRED_ALIASES = {
+    'advance monthly retail trade': 'advance monthly sales for retail and food services',
+    'new residential sales': 'new home sales',
+    'advance report on durable goods': 'durable goods',
+}
 BEA_US_RELEASES = frozenset({
     'gross domestic product', 'personal income and outlays',
     'u.s. international trade in goods and services', 'u.s. international transactions',
@@ -57,6 +69,14 @@ def error_reason(exc):
     if category == 'FredNotConfiguredError':
         return 'FRED_API_KEY 미설정 (무료 키 필요)'
     return category
+
+
+def release_key(name):
+    """Normalize official calendar titles to the matching FRED release name."""
+    normalized = ' '.join(str(name).split()).casefold()
+    if normalized.startswith('advance report on durable goods'):
+        return 'durable goods'
+    return CENSUS_FRED_ALIASES.get(normalized, normalized)
 
 
 class PublicMarketData:
@@ -171,6 +191,13 @@ class PublicMarketData:
             return sorted(result, key=lambda item: (item['scheduled_at'], item['title']))
         return self._once(('bea_calendar', day), fetch)
 
+    def census_calendar(self, day):
+        source = CENSUS_CALENDAR_URL.format(year=day.year)
+        def fetch():
+            response = get_with_retry(source, timeout=15, provider='Census')
+            return census_events(response.content.decode('utf-8'), day, source)
+        return self._once(('census_calendar', day), fetch)
+
     def policy_calendar(self, day):
         def fetch():
             root = 'https://www.federalreserve.gov'
@@ -246,6 +273,86 @@ class FedCalendarParser(HTMLParser):
             if key == 'days' and self.row.get('title') and re.fullmatch(r'\d{1,2}(?:\s*[-–]\s*\d{1,2})?', self.row[key]):
                 self.rows.append(dict(self.row))
         self.depth -= 1
+
+
+class CensusCalendarParser(HTMLParser):
+    """Read the Census annual calendar table and its local-time sort key."""
+
+    def __init__(self):
+        super().__init__()
+        self.in_calendar = False
+        self.calendar_found = False
+        self.in_row = False
+        self.cells = []
+        self.cell = None
+        self.rows = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'table' and attrs.get('id') == 'calendar':
+            self.in_calendar = True
+            self.calendar_found = True
+        if not self.in_calendar:
+            return
+        if tag == 'tr':
+            self.in_row = True
+            self.cells = []
+        elif tag == 'td' and self.in_row:
+            self.cell = {'parts': [], 'sort_key': attrs.get('sorttable_customkey', '')}
+
+    def handle_data(self, data):
+        if self.cell is not None:
+            self.cell['parts'].append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'td' and self.cell is not None:
+            self.cell['text'] = ' '.join(' '.join(self.cell.pop('parts')).split())
+            self.cells.append(self.cell)
+            self.cell = None
+        elif tag == 'tr' and self.in_row:
+            if self.cells:
+                self.rows.append(self.cells)
+            self.in_row = False
+        elif tag == 'table' and self.in_calendar:
+            self.in_calendar = False
+
+
+def census_events(html, day, source):
+    parser = CensusCalendarParser()
+    parser.feed(html)
+    if not parser.calendar_found:
+        raise ValueError('Census calendar table unavailable')
+    eastern = ZoneInfo('America/New_York')
+    events = []
+    seen = set()
+    for cells in parser.rows:
+        if len(cells) < 3:
+            continue
+        title = ' '.join(cells[0]['text'].split())
+        normalized = ' '.join(title.split()).casefold()
+        if normalized not in CENSUS_US_RELEASES and not normalized.startswith('advance report on durable goods'):
+            continue
+        sort_key = cells[1]['sort_key']
+        scheduled_at = None
+        try:
+            if re.fullmatch(r'\d{12}', sort_key):
+                local = datetime.strptime(sort_key, '%Y%m%d%H%M').replace(tzinfo=eastern)
+                event_day = local.date()
+                scheduled_at = local.isoformat()
+            else:
+                event_day = datetime.strptime(cells[1]['text'], '%B %d, %Y').date()
+        except ValueError:
+            continue
+        if event_day != day:
+            continue
+        key = (release_key(title), scheduled_at)
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append({'title': title, 'scheduled_at': scheduled_at, 'source': source,
+                       'time_label': cells[2]['text'],
+                       'related_assets': ['미국 주가지수', '미 국채', '달러']})
+    return sorted(events, key=lambda item: (item['scheduled_at'] or '', item['title']))
 
 
 def fed_events(html, day, source):

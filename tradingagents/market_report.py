@@ -15,6 +15,7 @@ import pandas as pd
 from markdown_it import MarkdownIt
 
 from tradingagents.dataflows.market_report import (
+    CENSUS_CALENDAR_URL,
     COMPANIES,
     FUTURES,
     INDICES,
@@ -25,6 +26,7 @@ from tradingagents.dataflows.market_report import (
     error_reason,
     finite,
     quote_url,
+    release_key,
 )
 from tradingagents.stock_discovery import SPY_HOLDINGS_SOURCE
 
@@ -384,41 +386,95 @@ def collect_report(provider=None, now=None):
 
     next_day = pd.Timestamp(window['next_day']).date()
     fred_source = 'https://fred.stlouisfed.org/releases/calendar'
+    fred_events = []
     try:
-        events = provider.calendar(next_day)
-        if not events:
+        fred_events = provider.calendar(next_day)
+        if not fred_events:
             add('다음 거래일', 'FRED 선별 미국 주요 발표', None, fred_source,
                 period=window['next_day'], status='partial',
                 reason='선별 대상 미국 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음',
                 note='미국 주요 지표·FOMC release만 선별; FRED 날짜 응답은 발표 시각·최초 공지 시각을 보장하지 않음',
                 information_scope='retrieval_time_schedule')
-        for event in events:
-            release_name = event.get('release_name', '경제 발표')
-            add('다음 거래일', release_name, release_name,
-                f'https://fred.stlouisfed.org/release?rid={int(event["release_id"])}', period=window['next_day'],
-                scheduled_at=None, note='FRED 날짜 목록에서 선별한 미국 발표; 예정 시각·당시 공지 시점 미확인',
-                related_assets=['미국 주가지수', '미 국채', '달러'],
-                information_scope='retrieval_time_schedule', schedule_scope='curated_us_release')
     except Exception as exc:
         missing('다음 거래일', 'FRED 선별 미국 주요 발표', fred_source, error_reason(exc))
 
-    bea_source = 'https://www.bea.gov/news/schedule/full'
+    census_source = CENSUS_CALENDAR_URL.format(year=next_day.year)
+    census_events = []
     try:
-        events = provider.bea_calendar(next_day)
-        if not events:
+        census_events = provider.census_calendar(next_day)
+        if not census_events:
+            add('다음 거래일', 'Census 공식 일정 표본', None, census_source,
+                period=window['next_day'], status='partial',
+                reason='선별 Census 발표가 확인되지 않음; 전체 일정 부재를 뜻하지 않음',
+                note='대상 연도별 Census 경제지표 달력에서 선별 지표를 확인',
+                information_scope='retrieval_time_schedule', schedule_scope='selected_census_releases')
+    except Exception as exc:
+        missing('다음 거래일', 'Census 공식 경제 일정', census_source, error_reason(exc))
+
+    bea_source = 'https://www.bea.gov/news/schedule/full'
+    bea_events = []
+    try:
+        bea_events = provider.bea_calendar(next_day)
+        if not bea_events:
             add('다음 거래일', 'BEA 공식 일정 표본', None, bea_source,
                 period=window['next_day'], status='partial',
                 reason='공식 공개 일정에서 해당일 선별 발표를 찾지 못함; 전체 일정 부재를 뜻하지 않음',
                 note='BEA GDP·소득·무역 등 선별 일정 확인',
                 information_scope='retrieval_time_schedule', schedule_scope='selected_bea_releases')
-        for event in events:
-            add('다음 거래일', 'BEA: ' + event['title'], event['title'], event['source'],
-                period=window['next_day'], scheduled_at=event['scheduled_at'],
-                related_assets=event['related_assets'], source_api=event['source_api'],
-                information_scope='retrieval_time_schedule', schedule_scope='selected_bea_releases',
-                note='BEA 공개 일정 원자료의 예정 시각; 조회 당시 일정이며 변경될 수 있음')
     except Exception as exc:
         missing('다음 거래일', 'BEA 공식 일정', bea_source, error_reason(exc))
+
+    missing('다음 거래일', 'BLS·DOL 공식 일정',
+            'https://www.bls.gov/schedule/news_release/',
+            '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인')
+
+    official_by_name = {}
+    for agency, events in (('Census', census_events), ('BEA', bea_events)):
+        for event in events:
+            official_by_name.setdefault(release_key(event['title']), []).append((agency, event))
+    matched_official = set()
+    for event in fred_events:
+        release_name = event.get('release_name', '경제 발표')
+        fred_event_source = f'https://fred.stlouisfed.org/release?rid={int(event["release_id"])}'
+        key = release_key(release_name)
+        matches = official_by_name.get(key, [])
+        sources = [fred_event_source]
+        scheduled_at = None
+        note = 'FRED 날짜 목록에서 선별한 미국 발표; 공식 발표 시각 미확인'
+        if matches:
+            matched_official.add(key)
+            sources.extend(source for _, item in matches
+                           for source in (item.get('source'), item.get('source_api')) if source)
+            official_times = {item['scheduled_at'] for _, item in matches if item.get('scheduled_at')}
+            if len(official_times) == 1:
+                scheduled_at = next(iter(official_times))
+                note = 'FRED 발표명과 공식 기관 일정이 일치; 기관 원자료의 예정 시각 사용'
+            elif len(official_times) > 1:
+                note = '공식 기관 일정의 시각이 서로 달라 시각 미확인으로 유지'
+            else:
+                note = 'FRED 날짜와 공식 기관 일정을 연결했으나 공식 시각 미확인'
+        add('다음 거래일', release_name, release_name, fred_event_source,
+            period=window['next_day'], scheduled_at=scheduled_at, sources=sources,
+            note=note, related_assets=['미국 주가지수', '미 국채', '달러'],
+            information_scope='retrieval_time_schedule', schedule_scope='curated_us_release')
+    for key, matches in official_by_name.items():
+        if key in matched_official:
+            continue
+        agencies = {agency for agency, _ in matches}
+        title = matches[0][1]['title']
+        official_times = {item['scheduled_at'] for _, item in matches if item.get('scheduled_at')}
+        scheduled_at = next(iter(official_times)) if len(official_times) == 1 else None
+        sources = [source for _, item in matches
+                   for source in (item.get('source'), item.get('source_api')) if source]
+        source = matches[0][1]['source']
+        agency_label = 'Census' if agencies == {'Census'} else ('BEA' if agencies == {'BEA'} else '미국 기관')
+        note = ('공식 기관 일정의 시각이 서로 달라 시각 미확인으로 유지' if len(official_times) > 1 else
+                ('공식 기관 일정의 예정 시각; 조회 당시 일정이며 변경될 수 있음' if scheduled_at else
+                 '공식 기관 일정에서 날짜만 확인; 시각 미확인'))
+        add('다음 거래일', f'{agency_label}: {title}', title, source,
+            period=window['next_day'], scheduled_at=scheduled_at, sources=sources,
+            related_assets=matches[0][1]['related_assets'], note=note,
+            information_scope='retrieval_time_schedule', schedule_scope='selected_official_releases')
     for symbol in COMPANIES:
         try:
             dates = provider.earnings(symbol)
@@ -613,7 +669,12 @@ def render_markdown(report):
                 else:
                     lines += [cell(item['value'])]
                 source = item['source']
-                source_line = f"출처: [원문](<{source}>)" if safe_url(source) else '출처: 확인 불가'
+                source_urls = item.get('sources') if section == '다음 거래일' else None
+                if source_urls:
+                    source_links = [f'[원문](<{url}>)' for url in source_urls if safe_url(url)]
+                    source_line = '출처: ' + ' · '.join(source_links) if source_links else '출처: 확인 불가'
+                else:
+                    source_line = f"출처: [원문](<{source}>)" if safe_url(source) else '출처: 확인 불가'
                 if safe_url(item.get('source_api')):
                     source_line += f" · [일정 원자료](<{item['source_api']}>)"
                 lines += ['', source_line,

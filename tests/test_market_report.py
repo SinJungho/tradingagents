@@ -131,10 +131,27 @@ class FakePublicData:
                 {'title': 'Undated secret', 'link': 'https://example.com/undated', 'publisher': 'Example', 'pub_date': None}]
 
     def calendar(self, day):
-        return [{'release_name': 'Producer Price Index', 'release_id': 46, 'date': day.isoformat()}]
+        return [
+            {'release_name': 'Producer Price Index', 'release_id': 46, 'date': day.isoformat()},
+            {'release_name': 'New Residential Construction', 'release_id': 93, 'date': day.isoformat()},
+            {'release_name': 'New Home Sales', 'release_id': 94, 'date': day.isoformat()},
+            {'release_name': 'Gross Domestic Product', 'release_id': 53, 'date': day.isoformat()},
+        ]
+
+    def census_calendar(self, day):
+        source = f'https://www.census.gov/economic-indicators/calendar-listview-{day.year}.html'
+        return [
+            {'title': 'New Residential Construction', 'scheduled_at': f'{day}T08:30:00-05:00',
+             'source': source, 'related_assets': ['미국 주가지수', '미 국채', '달러']},
+            {'title': 'New Residential Sales', 'scheduled_at': f'{day}T10:00:00-05:00',
+             'source': source, 'related_assets': ['미국 주가지수', '미 국채', '달러']},
+        ]
 
     def bea_calendar(self, day):
-        return []
+        return [{'title': 'Gross Domestic Product', 'scheduled_at': f'{day}T08:30:00-05:00',
+                 'source': 'https://www.bea.gov/news/schedule/full',
+                 'source_api': 'https://apps.bea.gov/API/signup/release_dates.json',
+                 'related_assets': ['미국 주가지수', '미 국채', '달러']}]
 
     def policy_calendar(self, day):
         return [{'title': 'Synthetic speech', 'scheduled_at': f'{day}T14:00:00-05:00', 'source': 'https://example.com/policy', 'time_label': '2:00 p.m.'}]
@@ -255,7 +272,8 @@ def test_breadth_marks_spy_proxy_date_and_wikipedia_fallback_unknown():
 
 def test_all_vendor_failures_still_preserve_structure(tmp_path):
     provider = Mock(spec=FakePublicData)
-    for name in ('daily', 'universe', 'macro', 'intraday', 'news', 'calendar', 'bea_calendar', 'earnings', 'policy_calendar'):
+    for name in ('daily', 'universe', 'macro', 'intraday', 'news', 'calendar', 'census_calendar',
+                 'bea_calendar', 'earnings', 'policy_calendar'):
         getattr(provider, name).side_effect = RuntimeError('secret credential')
     report = mr.collect_report(provider, datetime.fromisoformat('2026-11-12T20:30:00-05:00'))
     mr.write_narrative(report, llm=Mock(invoke=Mock(side_effect=RuntimeError('llm key'))))
@@ -452,6 +470,88 @@ def test_us_calendar_sources_filter_noise_and_convert_bea_time(monkeypatch):
     assert len(events) == 1
     assert events[0]['title'] == 'Gross Domestic Product'
     assert pd.Timestamp(events[0]['scheduled_at']) == pd.Timestamp('2026-11-13T08:30:00-05:00')
+
+
+@pytest.mark.parametrize(('day', 'key', 'expected'), [
+    ('2026-03-13', '202603130830', '2026-03-13T08:30:00-04:00'),
+    ('2026-11-13', '202611130830', '2026-11-13T08:30:00-05:00'),
+])
+def test_census_calendar_uses_target_year_and_eastern_dst(monkeypatch, day, key, expected):
+    from tradingagents.dataflows import market_report as data
+
+    displayed_date = datetime.fromisoformat(day).strftime('%B %d, %Y')
+    html = f'''<table id="calendar">
+      <tr><td class="hiden">Header</td></tr>
+      <tr height="20"><td><a href="/housing/">New Residential
+        Construction</a></td><td sorttable_customkey="{key}">{displayed_date}</td>
+        <td>8:30 AM</td><td>January 2026</td><td class="hiden">A{key}</td></tr>
+      <tr><td><a>Construction Spending</a></td><td sorttable_customkey="{key}">{displayed_date}</td>
+        <td>8:30 AM</td></tr>
+      <tr><td><a>New Residential Sales</a></td><td>{displayed_date}</td>
+        <td>Time not listed</td><td>January 2026</td></tr>
+    </table>'''
+    calls = []
+    monkeypatch.setattr(data, 'get_with_retry', lambda url, **kwargs: (
+        calls.append((url, kwargs)) or SimpleNamespace(content=html.encode('utf-8'))))
+    events = PublicMarketData().census_calendar(datetime.fromisoformat(day).date())
+
+    assert len(events) == 2
+    by_title = {event['title']: event for event in events}
+    assert by_title['New Residential Construction']['scheduled_at'] == expected
+    assert by_title['New Residential Sales']['scheduled_at'] is None
+    assert calls[0][0] == f'https://www.census.gov/economic-indicators/calendar-listview-{day[:4]}.html'
+    assert calls[0][1]['provider'] == 'Census'
+
+
+def test_census_calendar_reports_http_403_as_missing(monkeypatch):
+    import requests
+
+    from tradingagents.dataflows import market_report as data
+    from tradingagents.dataflows.market_report import PublicDataError
+
+    def forbidden(*args, **kwargs):
+        raise requests.HTTPError('forbidden')
+
+    monkeypatch.setattr(data, 'get_with_retry', forbidden)
+    with pytest.raises(PublicDataError, match='HTTPError'):
+        PublicMarketData().census_calendar(datetime(2026, 11, 13).date())
+
+
+def test_next_day_calendar_merges_census_time_and_reports_unavailable_agencies(report):
+    rows = [row for row in report['evidence'] if row['label'] == 'New Residential Construction']
+    assert len(rows) == 1
+    assert rows[0]['scheduled_at'] == '2026-11-13T08:30:00-05:00'
+    assert rows[0]['sources'] == [
+        'https://fred.stlouisfed.org/release?rid=93',
+        'https://www.census.gov/economic-indicators/calendar-listview-2026.html',
+    ]
+    sales = [row for row in report['evidence'] if row['label'] == 'New Home Sales']
+    assert len(sales) == 1
+    assert sales[0]['scheduled_at'] == '2026-11-13T10:00:00-05:00'
+    gdp = [row for row in report['evidence'] if row['label'] == 'Gross Domestic Product']
+    assert len(gdp) == 1
+    assert gdp[0]['scheduled_at'] == '2026-11-13T08:30:00-05:00'
+    assert 'https://www.bea.gov/news/schedule/full' in gdp[0]['sources']
+    gaps = [row for row in report['evidence'] if row['status'] == 'unavailable']
+    coverage_gap = next(row for row in gaps if row['label'] == 'BLS·DOL 공식 일정')
+    assert coverage_gap['source'] == 'https://www.bls.gov/schedule/news_release/'
+    assert coverage_gap['reason'] == '자동 수집 대상 아님(공개 일정 자동 조회 차단); CPI·고용·PPI·주간 실업수당 시각 미확인'
+    assert 'sources' not in coverage_gap
+    markdown = mr.render_markdown(report)
+    assert '[원문](<https://fred.stlouisfed.org/release?rid=93>)' in markdown
+    assert '[원문](<https://www.census.gov/economic-indicators/calendar-listview-2026.html>)' in markdown
+
+
+def test_census_http_403_is_a_report_gap():
+    from tradingagents.dataflows.market_report import PublicDataError
+
+    provider = FakePublicData()
+    provider.census_calendar = lambda day: (_ for _ in ()).throw(PublicDataError('HTTPError'))
+    report = mr.collect_report(provider, provider.now)
+    gap = next(row for row in report['evidence'] if row['label'] == 'Census 공식 경제 일정')
+    assert gap['status'] == 'unavailable'
+    assert gap['reason'] == 'HTTPError'
+    assert gap['source'] == 'https://www.census.gov/economic-indicators/calendar-listview-2026.html'
 
 
 def test_missing_fred_key_explained(monkeypatch):
