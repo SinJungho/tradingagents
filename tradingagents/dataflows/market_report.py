@@ -11,7 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from tradingagents.dataflows.net import get_with_retry
-from tradingagents.dataflows.vendors import fred
+from tradingagents.dataflows.vendors import fred, sec_edgar
 from tradingagents.dataflows.vendors.yahoo.news import _extract_article_data
 from tradingagents.stock_discovery import fetch_index_universe
 
@@ -40,6 +40,7 @@ BEA_US_RELEASES = frozenset({
     'u.s. international investment position',
     'gross domestic product by state and personal income by state',
 })
+ET = ZoneInfo('America/New_York')
 
 
 def quote_url(symbol):
@@ -184,6 +185,53 @@ class PublicMarketData:
 
     def earnings(self, symbol):
         return self._once(('earnings', symbol), lambda: self.ticker(symbol).get_earnings_dates(limit=12))
+
+    def earnings_release(self, symbol, day):
+        def fetch():
+            cik = sec_edgar.cik_for(symbol)
+            if cik is None:
+                raise ValueError('SEC CIK not found')
+            source_api = f'https://data.sec.gov/submissions/CIK{cik}.json'
+            payload = sec_edgar._fetch_json(source_api)
+            recent = ((payload.get('filings') or {}).get('recent'))
+            fields = ('form', 'items', 'filingDate', 'acceptanceDateTime',
+                      'accessionNumber', 'primaryDocument')
+            if not isinstance(recent, dict) or any(not isinstance(recent.get(field), list) for field in fields):
+                raise ValueError('SEC submissions format unavailable')
+            arrays = [recent[field] for field in fields]
+            if len({len(values) for values in arrays}) != 1:
+                raise ValueError('SEC submissions arrays have different lengths')
+
+            matches = []
+            for form, items, filing_date, accepted_raw, accession, document in zip(*arrays, strict=True):
+                if form != '8-K' or '2.02' not in {item.strip() for item in str(items or '').split(',')}:
+                    continue
+                try:
+                    accepted = datetime.fromisoformat(str(accepted_raw).replace('Z', '+00:00'))
+                except ValueError as exc:
+                    raise ValueError('SEC acceptance timestamp unavailable') from exc
+                if accepted.tzinfo is None:
+                    raise ValueError('SEC acceptance timestamp has no timezone')
+                accepted_et = accepted.astimezone(ET)
+                if accepted_et.date() != day:
+                    continue
+                accession = str(accession or '')
+                if not re.fullmatch(r'\d{10}-\d{2}-\d{6}', accession):
+                    raise ValueError('SEC accession number unavailable')
+                directory = (f'https://www.sec.gov/Archives/edgar/data/{int(cik)}/'
+                             f'{accession.replace("-", "")}')
+                document = str(document or '').strip()
+                url = f'{directory}/{quote(document, safe="._-")}' if document else f'{directory}/'
+                matches.append({
+                    'filing_date': filing_date,
+                    'accepted_at': accepted_et.isoformat(),
+                    'accession_number': accession,
+                    'primary_document': document or None,
+                    'url': url,
+                })
+            return {'source_api': source_api, 'filings': matches}
+
+        return self._once(('earnings_release', symbol, day), fetch)
 
 
 def finite(value):

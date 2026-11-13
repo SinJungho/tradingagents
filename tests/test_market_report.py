@@ -1,6 +1,6 @@
 """Offline report contracts: calendar, arithmetic, provenance and graceful failures."""
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -122,8 +122,19 @@ class FakePublicData:
     def policy_calendar(self, day):
         return [{'title': 'Synthetic speech', 'scheduled_at': f'{day}T14:00:00-05:00', 'source': 'https://example.com/policy', 'time_label': '2:00 p.m.'}]
 
+    def earnings_release(self, symbol, day):
+        source_api = 'https://data.sec.gov/submissions/CIK0000000001.json'
+        filings = ([{'filing_date': day.isoformat(), 'accepted_at': f'{day}T16:30:00-05:00',
+                    'accession_number': '0000000001-26-000024', 'primary_document': 'aapl-20261112.htm',
+                    'url': 'https://www.sec.gov/Archives/edgar/data/1/000000000126000024/aapl-20261112.htm'}]
+                   if symbol == 'AAPL' else [])
+        return {'source_api': source_api, 'filings': filings}
+
     def earnings(self, symbol):
-        return pd.DataFrame({'Reported EPS': [9999.]}, index=pd.DatetimeIndex(['2026-11-13T16:05:00-05:00']))
+        return pd.DataFrame({'Reported EPS': [1.25, 9999.], 'EPS Estimate': [1., 1000.],
+                             'Surprise(%)': [25., None]},
+                            index=pd.DatetimeIndex(['2026-11-12T16:05:00-05:00',
+                                                    '2026-11-13T16:05:00-05:00']))
 
 
 @pytest.fixture
@@ -148,6 +159,16 @@ def test_collection_bounds_sources_and_dedup(report):
     assert all(r['value']['relative_5d_pp'] == 0 for r in sectors)
     assert all(r['value']['rank_1d'] == 1 for r in sectors)
     assert any(r['label'] == 'Producer Price Index' for r in rows)
+    official = next(r for r in rows if r['label'] == 'AAPL 8-K Item 2.02 실적 공시')
+    assert official['source_kind'] == 'official' and official['source'].startswith('https://www.sec.gov/Archives/')
+    assert official['published_at'] == '2026-11-12T16:30:00-05:00'
+    yahoo_eps = next(r for r in rows if r['label'] == 'AAPL 실적 EPS·예상치 (Yahoo 2차 출처)')
+    assert yahoo_eps['source_kind'] == 'secondary'
+    assert yahoo_eps['source'] == 'https://finance.yahoo.com/calendar/earnings?symbol=AAPL'
+    assert yahoo_eps['value']['surprise_pct'] == pytest.approx(25.)
+    assert 'abs(eps_estimate)' in yahoo_eps['calculation']
+    assert '서프라이즈 계산식:' in yahoo_eps['note']
+    assert next(r for r in rows if r['label'] == 'MSFT 당일 실적 공시 확인')['value'] == {'official_8k_2_02': False}
     for row in rows:
         assert {'value', 'unit', 'observation_period', 'published_at', 'retrieved_at', 'source', 'status'} <= row.keys()
 
@@ -200,7 +221,8 @@ def test_intraday_close_proxy_fills_sector_and_breadth_with_provenance():
 
 def test_all_vendor_failures_still_preserve_structure(tmp_path):
     provider = Mock(spec=FakePublicData)
-    for name in ('daily', 'universe', 'macro', 'intraday', 'news', 'calendar', 'bea_calendar', 'earnings', 'policy_calendar'):
+    for name in ('daily', 'universe', 'macro', 'intraday', 'news', 'calendar', 'bea_calendar',
+                 'earnings', 'earnings_release', 'policy_calendar'):
         getattr(provider, name).side_effect = RuntimeError('secret credential')
     report = mr.collect_report(provider, datetime.fromisoformat('2026-11-12T20:30:00-05:00'))
     mr.write_narrative(report, llm=Mock(invoke=Mock(side_effect=RuntimeError('llm key'))))
@@ -210,6 +232,8 @@ def test_all_vendor_failures_still_preserve_structure(tmp_path):
         assert f'## {section}' in markdown
     assert '불완전 보고서' in markdown and 'LLM 해석 실패' in markdown
     assert 'secret credential' not in markdown and 'llm key' not in markdown
+    assert any(row['label'] == 'AAPL SEC 8-K Item 2.02 확인' and row['status'] == 'unavailable'
+               for row in report['evidence'])
     assert len(list(path.iterdir())) == 3
 
 
@@ -224,6 +248,7 @@ def test_html_tables_links_toc_and_escaping(report, tmp_path):
     assert 'href="https://finance.yahoo.com/' in html
     markdown = (first / 'report.md').read_text()
     assert '자료 상태: 확인' in markdown and '부분·미확인 항목:' in markdown
+    assert '서프라이즈 계산식:' in markdown and r'surprise\_pct' in markdown
     assert '제한: 확인 불가' not in markdown
     saved = json.loads((first / 'evidence.json').read_text())
     assert saved['window'] == report['window']
@@ -269,6 +294,75 @@ def test_provider_cache_includes_failures():
         with pytest.raises(ValueError, match='RuntimeError'):
             provider._once(('bad',), broken)
     assert broken.call_count == 1
+
+
+def test_sec_earnings_release_uses_eastern_acceptance_date(monkeypatch):
+    from tradingagents.dataflows.vendors import sec_edgar
+
+    payload = {'filings': {'recent': {
+        'form': ['8-K', '8-K', '10-Q'],
+        'items': ['2.02,9.01', '2.02', '2.02'],
+        'filingDate': ['2026-11-12', '2026-11-13', '2026-11-12'],
+        'acceptanceDateTime': ['2026-11-13T00:30:23.000Z', '2026-11-13T05:30:23.000Z',
+                               '2026-11-13T00:30:23.000Z'],
+        'accessionNumber': ['0000000001-26-000024', '0000000001-26-000025', '0000000001-26-000026'],
+        'primaryDocument': ['aapl-20261112.htm', 'aapl-later.htm', 'aapl-quarterly.htm'],
+    }}}
+    monkeypatch.setattr(sec_edgar, 'cik_for', Mock(return_value='0000000001'))
+    fetch = Mock(return_value=payload)
+    monkeypatch.setattr(sec_edgar, '_fetch_json', fetch)
+    provider = PublicMarketData()
+
+    result = provider.earnings_release('AAPL', date(2026, 11, 12))
+    assert result['source_api'] == 'https://data.sec.gov/submissions/CIK0000000001.json'
+    assert len(result['filings']) == 1
+    assert result['filings'][0]['accepted_at'] == '2026-11-12T19:30:23-05:00'
+    assert result['filings'][0]['url'] == ('https://www.sec.gov/Archives/edgar/data/1/'
+                                           '000000000126000024/aapl-20261112.htm')
+    assert provider.earnings_release('AAPL', date(2026, 11, 12)) == result
+    assert fetch.call_count == 1
+
+
+def test_sec_earnings_release_without_item_202(monkeypatch):
+    from tradingagents.dataflows.vendors import sec_edgar
+
+    monkeypatch.setattr(sec_edgar, 'cik_for', lambda symbol: '0000000001')
+    monkeypatch.setattr(sec_edgar, '_fetch_json', lambda url: {'filings': {'recent': {
+        'form': ['8-K'], 'items': ['9.01'], 'filingDate': ['2026-11-12'],
+        'acceptanceDateTime': ['2026-11-13T00:30:23.000Z'],
+        'accessionNumber': ['0000000001-26-000024'], 'primaryDocument': ['aapl-20261112.htm'],
+    }}})
+    result = PublicMarketData().earnings_release('AAPL', date(2026, 11, 12))
+    assert result['filings'] == []
+
+
+def test_sec_earnings_release_failure_is_cached_and_sanitized(monkeypatch):
+    from tradingagents.dataflows import market_report as data
+    from tradingagents.dataflows.vendors import sec_edgar
+
+    monkeypatch.setattr(sec_edgar, 'cik_for', lambda symbol: '0000000001')
+    fetch = Mock(side_effect=RuntimeError('synthetic private response'))
+    monkeypatch.setattr(sec_edgar, '_fetch_json', fetch)
+    provider = PublicMarketData()
+
+    for _ in range(2):
+        with pytest.raises(data.PublicDataError) as caught:
+            provider.earnings_release('AAPL', date(2026, 11, 12))
+        assert str(caught.value) == 'RuntimeError'
+        assert 'synthetic private response' not in str(caught.value)
+    assert fetch.call_count == 1
+
+
+def test_yahoo_partial_eps_does_not_compute_surprise():
+    provider = FakePublicData()
+    provider.earnings = lambda symbol: pd.DataFrame(
+        {'Reported EPS': [1.25], 'EPS Estimate': [float('nan')], 'Surprise(%)': [25.]},
+        index=pd.DatetimeIndex(['2026-11-12T16:05:00-05:00']))
+    report = mr.collect_report(provider, provider.now)
+    row = next(r for r in report['evidence'] if r['label'] == 'AAPL 실적 EPS·예상치 (Yahoo 2차 출처)')
+    assert row['value']['reported_eps'] == pytest.approx(1.25)
+    assert row['value']['eps_estimate'] is None and row['value']['surprise_pct'] is None
+    assert row['status'] == 'partial' and row['calculation'] is None
 
 
 def test_cli_no_llm_and_help(monkeypatch, report, tmp_path):
