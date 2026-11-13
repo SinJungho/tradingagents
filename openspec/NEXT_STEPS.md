@@ -17,7 +17,7 @@
 | 1 | Russell 2000 출처 재확인 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(Vanguard·SSGA·FTSE Russell 무료 대체 없음). iShares 응답이 복구되는지 주기적으로 확인한다. | 작음 | 유료 출처는 범위 밖 |
 | 2 | Worker 환경 | Orca 저장소 setup 스크립트가 비어 있어 워크트리에 `.venv`가 없고(앱 설정에서만 변경 가능), Codex 샌드박스에는 네트워크·npm 캐시가 없다. 현재 우회 절차는 `openspec-change` 스킬 7절에 기록했다. | 작음 | 앱 설정·샌드박스 정책 변경 여부 |
 | 3 | discover 단독 구간 실패 문구 | 통합 테스트(2026-11-13): `discover --universe russell2000`은 종료 코드 1과 `russell2000 universe failed (MarketUniverseError)`만 출력해, 원인("HTML page instead of the holdings CSV")이 CLI에 보이지 않는다. | 작음 | 불필요 |
-| 3 | FRED 'FOMC Press Release' 표시 | 통합 테스트에서 FOMC 회의가 없는 2026-11-13에도 FRED 날짜 목록의 'FOMC Press Release'가 다음 거래일 일정으로 표시됐다. Fed 공식 일정과 대조해 실제 정책 발표만 남길지 검토 필요. | 작음 | 불필요 |
+| 3 | FRED 'FOMC Press Release' 표시 | 통합 테스트에서 Fed 공식 월별 일정에는 연설 2건만 있던 2026-11-13에 FRED 날짜 목록의 'FOMC Press Release'가 시각 없이 표시됐다(11-03도 같음). 어떤 보도자료인지 미확인이다. Fed 공식 일정과 대조해 실제 정책 발표만 남길지 검토 필요. | 작음 | 불필요 |
 | 대기 | E3 집 네트워크에서 Polymarket 공개 GET 검증 | 활성 변경안의 마지막 미완료 작업. 집 네트워크 접근 불가. | 작음 | 환경이 가능해진 뒤 실행 필요 |
 | 대기 | 시장 발굴 실제 실행 시간 계측 | 종목 발굴 재사용 평가는 합성 자료 기준이다. | 중간 | 공개 시세 접근 환경에서 측정 |
 
