@@ -78,3 +78,34 @@ def test_source_dates_not_conflated(source, label, kind, membership):
     assert info['membership_as_of'] == membership
     assert info['retrieved_at'].endswith('+00:00')
     assert all(url.startswith('https://') for url in info['source_urls'])
+
+
+def test_parallel_split_prefetch_keeps_order_and_per_ticker_outcomes(monkeypatch):
+    from tradingagents.dataflows.errors import NoMarketDataError
+
+    history = pd.Series(range(1, 301), index=pd.bdate_range(end='2026-11-12', periods=300), dtype=float)
+    seen = []
+
+    def splits(symbol):
+        seen.append(symbol)
+        if symbol == 'NODATA':
+            raise NoMarketDataError(symbol, symbol, 'no split rows')
+        if symbol == 'BROKEN':
+            raise RuntimeError('synthetic split failure')
+        return pd.Series(dtype=float)
+
+    monkeypatch.setattr(sd, '_closes', lambda *_: history)
+    monkeypatch.setattr(sd, '_facts', lambda *_: None)
+    monkeypatch.setattr(sd, 'get_splits', splits)
+    monkeypatch.setattr(sd, 'get_current_date', lambda: '2026-11-12')
+    names = ('ZZZ', 'NODATA', 'BROKEN', 'AAA', 'AAA')
+    result = sd._score_tickers(names)
+
+    assert sorted(seen) == ['AAA', 'BROKEN', 'NODATA', 'ZZZ']
+    assert result.calls['splits'] == 4
+    assert [entry.ticker for entry in result.tickers] == list(names)
+    assert [(f.ticker, f.source) for f in result.failures] == [('BROKEN', 'Yahoo Finance split history')]
+    by_ticker = {entry.ticker: entry.scores['value'] for entry in result.tickers}
+    assert 'split history' in by_ticker['NODATA'].missing
+    assert 'split history' in by_ticker['BROKEN'].missing
+    assert 'split history' not in by_ticker['ZZZ'].missing

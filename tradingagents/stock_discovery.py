@@ -6,6 +6,7 @@ import csv
 import io
 import re
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -946,6 +947,16 @@ def _cap_band(market_cap: int | None) -> str | None:
     return None
 
 
+_SPLIT_WORKERS = 8
+
+
+def _fetch_splits(symbol: str) -> tuple[pd.Series | None, Exception | None]:
+    try:
+        return get_splits(symbol), None
+    except Exception as exc:  # handled per ticker, exactly as a sequential call would be
+        return None, exc
+
+
 @company_index_session()
 def _score_tickers(
     names: tuple[str, ...],
@@ -970,6 +981,13 @@ def _score_tickers(
     timings = dict.fromkeys(('prices', 'sec', 'splits', 'scoring'), 0.0)
     calls = dict.fromkeys(('prices', 'sec', 'splits'), 0)
     reused = {}
+    # Split history has no disk cache and dominated warm runs (266 of 288 s for 503 tickers),
+    # so fetch it once per provider symbol up front, in parallel.
+    stage = perf_counter()
+    symbols = list(dict.fromkeys(_provider_symbol(ticker) for ticker in names))
+    with ThreadPoolExecutor(max_workers=_SPLIT_WORKERS) as pool:
+        split_results = dict(zip(symbols, pool.map(_fetch_splits, symbols), strict=True))
+    timings['splits'] = perf_counter() - stage
     for ticker in names:
         attempted += 1
         if progress:
@@ -1004,20 +1022,12 @@ def _score_tickers(
             failures.append(_failure(ticker, "SEC EDGAR annual facts", exc))
 
         timings['sec'] += perf_counter() - stage
-        stage = perf_counter()
         calls['splits'] += 1
-        splits_available = True
-        try:
-            splits = get_splits(_provider_symbol(ticker))
-        except NoMarketDataError:
-            splits = None
-            splits_available = False
-        except Exception as exc:
-            splits = None
-            splits_available = False
-            failures.append(_failure(ticker, "Yahoo Finance split history", exc))
+        splits, split_error = split_results[symbol]
+        splits_available = split_error is None
+        if split_error is not None and not isinstance(split_error, NoMarketDataError):
+            failures.append(_failure(ticker, "Yahoo Finance split history", split_error))
 
-        timings['splits'] += perf_counter() - stage
         stage = perf_counter()
         try:
             scores = score_styles(as_of, closes, facts, splits)
