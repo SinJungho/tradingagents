@@ -515,6 +515,8 @@ def parse_public_index_page(
 
 def parse_iwm_holdings(text: str, *, minimum: int = 1600, maximum: int = 2300) -> DiscoveryUniverse:
     """Use disclosed IWM holdings as a dated Russell 2000 membership proxy."""
+    if text.lstrip().startswith("<"):
+        raise MarketUniverseError("Russell 2000 source returned an HTML page instead of the holdings CSV")
     rows = list(csv.reader(io.StringIO(text)))
     header_index = next(
         (

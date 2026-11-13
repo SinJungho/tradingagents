@@ -316,6 +316,21 @@ def test_iwm_holdings_parser_marks_russell_2000_as_proxy():
 
 
 @pytest.mark.unit
+def test_iwm_holdings_parser_reports_html_instead_of_csv():
+    with pytest.raises(
+        stock_discovery.MarketUniverseError,
+        match="^Russell 2000 source returned an HTML page instead of the holdings CSV$",
+    ):
+        stock_discovery.parse_iwm_holdings(" \n<!DOCTYPE html><html></html>")
+
+    with pytest.raises(
+        stock_discovery.MarketUniverseError,
+        match="^Russell 2000 holdings are missing the Ticker/Name columns$",
+    ):
+        stock_discovery.parse_iwm_holdings("Date,Weight\n2026-11-11,0.2\n")
+
+
+@pytest.mark.unit
 def test_spy_holdings_xlsx_parser_uses_dated_equity_tickers_only():
     rows = [
         ["Fund Name:", "State Street SPDR S&P 500 ETF Trust"],
@@ -492,6 +507,39 @@ def test_combined_market_discovery_keeps_loaded_sections_when_one_source_fails(m
     assert result.source_failures == (("russell2000", "MarketUniverseError"),)
     assert "russell2000: MarketUniverseError" in result.render()
     assert [entry.ticker for entry in result.tickers] == ["AAA"]
+
+
+@pytest.mark.unit
+def test_all_market_discovery_records_russell_html_failure_and_continues(monkeypatch):
+    listing = stock_discovery.DiscoveryUniverse(
+        "US exchange-listed common stocks", "fixture://listing", "2026-11-12", ("AAA",)
+    )
+    other_sections = {
+        key: stock_discovery.DiscoveryUniverse(key, f"fixture://{key}", "2026-11-11", ("BBB",))
+        for key in stock_discovery._INDEX_ORDER
+        if key != "russell2000"
+    }
+
+    def fetch_index(key):
+        if key == "russell2000":
+            return stock_discovery.parse_iwm_holdings("<!DOCTYPE html><html></html>")
+        return other_sections[key]
+
+    monkeypatch.setattr(stock_discovery, "fetch_us_listed_universe", lambda: listing)
+    monkeypatch.setattr(stock_discovery, "fetch_market_cap_snapshot", lambda: ({"AAA": 12_000_000_000}, "2026-11-12"))
+    monkeypatch.setattr(stock_discovery, "fetch_index_universe", fetch_index)
+    monkeypatch.setattr(stock_discovery, "get_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(stock_discovery, "_closes", lambda _ticker: _closes())
+    monkeypatch.setattr(stock_discovery, "_facts", lambda _ticker, _as_of: FACTS)
+    monkeypatch.setattr(stock_discovery, "get_splits", lambda _ticker: pd.Series(dtype=float))
+
+    result = stock_discovery.discover_market(["all"])
+
+    assert result.source_failures == (("russell2000", "MarketUniverseError"),)
+    assert "russell2000: MarketUniverseError" in result.render()
+    assert "Russell 2000" not in [section.name for section in result.sections]
+    assert "sp600" in [section.name for section in result.sections]
+    assert [entry.ticker for entry in result.tickers] == ["AAA", "BBB"]
 
 
 @pytest.mark.unit
