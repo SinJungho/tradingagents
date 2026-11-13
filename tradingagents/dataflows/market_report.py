@@ -25,6 +25,7 @@ MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2�
 BEA_RELEASES_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
 BEA_SCHEDULE_URL = 'https://www.bea.gov/news/schedule/full'
 CENSUS_CALENDAR_URL = 'https://www.census.gov/economic-indicators/calendar-listview-{year}.html'
+BLS_CALENDAR_URL = 'https://www.bls.gov/schedule/news_release/bls.ics'
 FRED_US_RELEASES = frozenset({
     'consumer price index', 'employment situation', 'employment cost index',
     'job openings and labor turnover survey', 'producer price index',
@@ -51,6 +52,11 @@ BEA_US_RELEASES = frozenset({
     'u.s. international trade in goods and services', 'u.s. international transactions',
     'u.s. international investment position',
     'gross domestic product by state and personal income by state',
+})
+BLS_US_RELEASES = frozenset({
+    'consumer price index', 'employment situation', 'producer price index',
+    'job openings and labor turnover survey', 'employment cost index', 'real earnings',
+    'u.s. import and export price indexes', 'productivity and costs',
 })
 ET = ZoneInfo('America/New_York')
 
@@ -199,6 +205,14 @@ class PublicMarketData:
             response = get_with_retry(source, timeout=15, provider='Census')
             return census_events(response.content.decode('utf-8'), day, source)
         return self._once(('census_calendar', day), fetch)
+
+    def bls_calendar(self, day):
+        def fetch():
+            # BLS, like SEC, answers 403 unless the User-Agent carries a contact address.
+            response = get_with_retry(BLS_CALENDAR_URL, timeout=15, provider='BLS',
+                                      headers={'User-Agent': sec_edgar._user_agent()})
+            return bls_events(response.content.decode('utf-8'), day)
+        return self._once(('bls_calendar', day), fetch)
 
     def policy_calendar(self, day):
         def fetch():
@@ -402,6 +416,42 @@ def census_events(html, day, source):
                        'time_label': cells[2]['text'],
                        'related_assets': ['미국 주가지수', '미 국채', '달러']})
     return sorted(events, key=lambda item: (item['scheduled_at'] or '', item['title']))
+
+
+def bls_events(ics, day):
+    text = re.sub(r'\n[ \t]', '', ics.replace('\r\n', '\n'))
+    if 'BEGIN:VCALENDAR' not in text:
+        raise ValueError('BLS calendar format unavailable')
+    events = []
+    seen = set()
+    for block in text.split('BEGIN:VEVENT')[1:]:
+        props = {}
+        for line in block.split('END:VEVENT')[0].split('\n'):
+            name, _, value = line.partition(':')
+            props.setdefault(name.split(';')[0].upper(), (name.upper(), value.strip()))
+        title = re.sub(r'\\([,;\\])', r'\1', props.get('SUMMARY', ('', ''))[1])
+        start_name, start = props.get('DTSTART', ('', ''))
+        if ' '.join(title.split()).casefold() not in BLS_US_RELEASES:
+            continue
+        try:
+            local = datetime.strptime(start.rstrip('Z'), '%Y%m%dT%H%M%S')
+        except ValueError:
+            continue
+        if start.endswith('Z'):
+            local = local.replace(tzinfo=UTC).astimezone(ET)
+        elif 'TZID=US-EASTERN' in start_name or 'TZID=AMERICA/NEW_YORK' in start_name:
+            local = local.replace(tzinfo=ET)
+        else:
+            continue
+        if local.date() != day:
+            continue
+        key = (release_key(title), local.isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        events.append({'title': title, 'scheduled_at': local.isoformat(), 'source': BLS_CALENDAR_URL,
+                       'related_assets': ['미국 주가지수', '미 국채', '달러']})
+    return sorted(events, key=lambda item: (item['scheduled_at'], item['title']))
 
 
 def fed_events(html, day, source):
