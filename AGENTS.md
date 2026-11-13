@@ -11,8 +11,9 @@ Classify each research request into one type and follow its flow. Repeat request
 
 | Type | Trigger | Flow |
 | --- | --- | --- |
+| Market report | 미국 시장 마감·장후 보고서 | `tradingagents market-report` → 동부시간 20시 기준 직전 완료 거래일 → 자료 충족 상태·Markdown·HTML·JSON 경로. 실제 LLM 평가는 명시적 보고서 생성 요청에서만 실행하며 개발 검증은 합성 자료 또는 `--no-llm`을 사용한다. |
 | Portfolio check | "check my portfolio", holdings review | Confirm data source and as-of time → `tradingagents portfolio live` (summary mode by default; add `--full-workflow` only when deep analysis is asked) → portfolio impact and conditional scenarios |
-| Stock discovery | User supplies a list of tickers to evaluate | Run `tradingagents discover --tickers <T1,T2>` for deterministic factor signals. Market-wide screening without supplied tickers is not implemented; do not invent candidates |
+| Stock discovery | User supplies tickers or asks for market-wide candidates | For up to 10 supplied tickers, run `tradingagents discover --tickers <T1,T2>`. For market-wide screening, run `tradingagents discover --universe all` or select sections such as `sp500,russell2000,smallcap`; show deterministic factor candidates and source limits, then use the single-stock workflow only for tickers the user selects. The screen does not call an LLM or rank across factors |
 | Single-stock analysis | a ticker is named | Skip discovery → confirm data and date → `tradingagents --ticker <T> --date <D>` → Bull/Bear review → evidence check → Trader/Risk/Portfolio Manager decision |
 | Investment scenario | buy/hold/sell, position sizing | If Toss live data is explicitly authorized, run `tradingagents portfolio live --symbol <T>` in summary mode by default; use `--full-workflow` only for a deep-analysis request → conditional scenarios. If the user supplies a holdings JSON file, use `tradingagents --ticker <T> --date <D> --portfolio <file.json>`. |
 

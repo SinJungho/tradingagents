@@ -24,13 +24,14 @@ ENV_NAMES = {".env", ".env.bak"}
 LIVE_RUN = re.compile(
     r"\btradingagents\s+portfolio\s+live\b"
     r"|\btradingagents\s+backtest\b"
+    r"|\btradingagents\s+market-report\b"
     r"|\btradingagents\b[^|;&]*--ticker\b"
 )
 # A shell chain or substitution hides a live run from Codex's prefix rules.
 COMPOUND = re.compile(r"&&|\|\||[;|`]|\$\(")
 # The programs and leading arguments .codex/rules/tradingagents.rules prompts for; keep in sync.
 RULE_PROGRAMS = {"tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"}
-RULE_PREFIXES = (["portfolio", "live"], ["backtest"], ["--ticker"])
+RULE_PREFIXES = (["portfolio", "live"], ["backtest"], ["--ticker"], ["market-report"])
 PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
 # A heredoc body is text handed to a program, not files the shell opens.
 # ponytail: a heredoc piped into an interpreter is not inspected; the ban targets accidents, not evasion.

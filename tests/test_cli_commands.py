@@ -129,7 +129,7 @@ def test_discover_command_accepts_nasdaq100_universe_without_running_analysis(ru
     [
         ["discover"],
         ["discover", "--tickers", "AAPL", "--universe", "nasdaq100"],
-        ["discover", "--universe", "sp500"],
+        ["discover", "--universe", "unknown"],
     ],
 )
 def test_discover_rejects_missing_conflicting_or_unknown_universe_before_scoring(runner, monkeypatch, args):
@@ -153,6 +153,29 @@ def test_discover_help_describes_universe_option(runner):
     assert result.exit_code == 0
     assert "--universe" in result.output
     assert "nasdaq100" in result.output
+    assert "russell2000" in result.output
+    assert "all" in result.output
+
+
+@pytest.mark.unit
+def test_discover_command_routes_market_sections_without_running_analysis(runner, monkeypatch):
+    from types import SimpleNamespace
+
+    selected = []
+    monkeypatch.setattr(
+        m,
+        "discover_market",
+        lambda names, **kwargs: selected.append((names, kwargs))
+        or SimpleNamespace(render=lambda: "market sections fixture"),
+    )
+
+    result = runner.invoke(m.app, ["discover", "--universe", "sp500,russell2000,smallcap"])
+
+    assert result.exit_code == 0, result.output
+    assert selected[0][0] == ["sp500", "russell2000", "smallcap"]
+    assert callable(selected[0][1]["progress"])
+    assert "market sections fixture" in result.output
+    assert calls == []
 
 
 class _Result:

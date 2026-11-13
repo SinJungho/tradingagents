@@ -70,6 +70,8 @@ def test_env_files_are_off_limits(payload, expected):
     ("tradingagents --checkpoint --ticker NVDA", "ask", "deny"),
     ("/opt/repo/.venv/bin/tradingagents portfolio live", "ask", "deny"),
     ("DEBUG=1 tradingagents portfolio live", "ask", "deny"),
+    ("tradingagents market-report", "ask", None),
+    ("cd /repo && tradingagents market-report", "ask", "deny"),
     ("tradingagents portfolio demo", None, None),
     ("tradingagents style-backtest NVDA --start 2025-01-01 --end 2025-02-01", None, None),
 ])

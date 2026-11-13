@@ -17,7 +17,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
 from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
-from tradingagents.stock_discovery import discover_nasdaq100, discover_stocks
+from tradingagents.stock_discovery import discover_market, discover_nasdaq100, discover_stocks
 from tradingagents.style_scores import evaluate_styles
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -39,6 +39,28 @@ app = typer.Typer(
 )
 app.add_typer(portfolio_app, name="portfolio")
 app.add_typer(auth_app, name="auth")
+
+
+@app.command("market-report")
+def market_report(
+    output_dir: str = typer.Option("results/market-reports", "--output-dir", help="보고서 저장 디렉터리"),
+    llm: bool = typer.Option(True, "--llm/--no-llm", help="기존 deep 모델로 근거 기반 해석 작성"),
+) -> None:
+    """미국 동부시간 20시까지 완료된 시장의 한국어 Markdown·HTML·근거 JSON 보고서."""
+    from tradingagents.market_report import (
+        collect_report,
+        quality_warnings,
+        save_report,
+        write_narrative,
+    )
+
+    report = collect_report()
+    if llm:
+        write_narrative(report)
+    path = save_report(report, output_dir)
+    typer.echo(f"보고 대상 거래일: {report['window']['day']} / 기준: {report['window']['cutoff']}")
+    typer.echo(f"자료 충족 상태: {'불완전 보고서' if quality_warnings(report) else '수집 범위 내 보고서'}")
+    typer.echo(f"저장 경로: {path.resolve()}")
 
 
 @app.command()
@@ -226,18 +248,29 @@ def discover(
         None, "--tickers", help="Comma-separated US stock tickers, up to 10, e.g. NVDA,AAPL"
     ),
     universe: str | None = typer.Option(
-        None, "--universe", help="Index universe to discover: nasdaq100"
+        None,
+        "--universe",
+        help=(
+            "Comma-separated sections: us-listed, nasdaq100, sp500, russell1000, "
+            "russell2000, sp400, sp600, largecap, midcap, smallcap, microcap, all"
+        ),
     ),
 ):
-    """Show current deterministic style signals for supplied tickers or Nasdaq-100; calls no model."""
+    """Screen supplied tickers or US market sections with deterministic signals; calls no model."""
     if (tickers is None) == (universe is None):
-        console.print("Provide exactly one of --tickers or --universe nasdaq100.", style="red", markup=False)
+        console.print("Provide exactly one of --tickers or --universe.", style="red", markup=False)
         raise typer.Exit(code=1)
     try:
         if universe is not None:
-            if universe.strip().lower() != "nasdaq100":
-                raise ValueError("--universe must be nasdaq100")
-            result = discover_nasdaq100()
+            selections = [value.strip().lower() for value in universe.split(",")]
+            if selections == ["nasdaq100"]:
+                result = discover_nasdaq100()
+            else:
+                def report_progress(done: int, total: int, ticker: str) -> None:
+                    if done == 1 or done % 100 == 0 or done == total:
+                        console.print(f"[{done}/{total}] {ticker}", markup=False, style="dim")
+
+                result = discover_market(selections, progress=report_progress)
         else:
             result = discover_stocks([ticker.strip() for ticker in tickers.split(",")])
     except ValueError as exc:

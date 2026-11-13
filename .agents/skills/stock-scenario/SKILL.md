@@ -1,6 +1,6 @@
 ---
 name: stock-scenario
-description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수·보유·매도 조건부 시나리오를 만든다. "TQQQ 매수 시나리오", "NVDA 분석해줘", "이 종목 팔아야 해?", "비중 얼마나", "보유 주식 반영해서 매매 시나리오" 요청에 사용한다. 사용자가 준 티커 목록의 결정론적 팩터 신호 확인은 `tradingagents discover --tickers <T1,T2>`를 안내하고, 티커 없이 시장 전체에서 후보를 찾는 기능은 미구현이라고 답한다.
+description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수·보유·매도 조건부 시나리오를 만든다. "TQQQ 매수 시나리오", "NVDA 분석해줘", "이 종목 팔아야 해?", "비중 얼마나", "보유 주식 반영해서 매매 시나리오" 요청에 사용한다. 사용자가 준 티커 목록의 결정론적 팩터 신호 확인은 `tradingagents discover --tickers <T1,T2>`를 안내하고, 시장 전체 후보 탐색 요청에는 `tradingagents discover --universe all` 또는 `--universe <section,...>`을 안내한다.
 ---
 
 # 종목 분석과 투자 시나리오
@@ -21,7 +21,7 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 - 1번은 `portfolio-check` skill의 실행 조건(환경변수 이름, 계좌 선택)을 먼저 확인한다. 여러 종목이면 `--symbol`을 반복한다(최대 `--max-symbols`).
 - 기본 시나리오 분석은 경량 경로를 쓴다. 사용자가 심층 분석, Bull/Bear 토론, Trader·Risk·Portfolio Manager 결정을 요청한 경우에만 1번 명령에 `--full-workflow`를 추가한다.
 - 과거 날짜 분석은 1번으로 할 수 없다(실계좌는 현재 시점). 과거 기준일이 필요하면 2·3번을 쓴다.
-- 사용자가 준 티커 목록의 결정론적 팩터 신호 확인에는 `tradingagents discover --tickers <T1,T2>`를 안내한다. 티커 없이 시장 전체에서 후보를 찾는 기능은 구현되지 않았으므로 후보를 지어내지 않는다.
+- 사용자가 준 티커 목록의 결정론적 팩터 신호 확인에는 `tradingagents discover --tickers <T1,T2>`를 안내한다. 시장 전체 후보 탐색은 `tradingagents discover --universe all`로, 선택 구간 탐색은 `--universe sp500,russell2000,smallcap`처럼 실행한다. 이 탐색은 Yahoo·SEC 공개 데이터의 결정론적 신호만 계산하고 LLM을 자동 호출하지 않는다. 결과의 2차 구성 목록, Russell 2000 ETF 보유종목 프록시, 시가총액 구간 기준을 알린다. 후보를 사용자가 최대 10개 직접 선택한 뒤 각 티커에 기존 단일 종목 분석 흐름을 적용한다.
 - 모든 실행은 다른 명령과 묶지 않은 단독 명령으로 하고, `--ticker`는 첫 인자로 둔다.
 
 ## 2. 상품 특성 확인

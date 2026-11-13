@@ -238,6 +238,18 @@ tradingagents --ticker NVDA --date 2026-09-23 --analysts market,news,fundamental
 ```
 Each flag skips only its own question. Run without a terminal, a missing answer stops the run before it starts and names the flag or variable to set.
 
+Deterministic discovery can screen supplied tickers or market sections without calling an LLM:
+
+```bash
+tradingagents discover --tickers NVDA,AAPL
+tradingagents discover --universe sp500,russell2000,smallcap
+tradingagents discover --universe all
+```
+
+`--universe all` includes the current U.S. exchange-listed common-stock universe, Nasdaq-100, S&P 500, Russell 1000/2000, S&P MidCap 400 and S&P SmallCap 600 sections, plus large-, mid-, small- and micro-cap bands. Cap bands use Yahoo Finance's current market-cap snapshot and project-defined thresholds: $10B+, $2B–$10B, $300M–$2B and below $300M. OTC securities are outside the listing universe. Nasdaq Trader files exclude ETFs, test issues and explicitly identified non-common securities; other listing types may still require review.
+
+Index membership sources appear in the output. The public S&P and Russell 1000 lists are secondary sources; Russell 2000 uses iShares IWM holdings as a proxy and can differ from official membership. The screen computes the existing value, growth, quality and momentum signals once per unique ticker, shows up to 10 Bullish names per factor and section in factor-score order, and creates no cross-factor rank or investment recommendation. A first whole-market run can take a long time because it retrieves price history and SEC facts for each symbol. Select up to 10 candidates and run the regular `tradingagents --ticker <T> --date <YYYY-MM-DD>` workflow separately for deeper analysis.
+
 At start-up the interactive CLI mentions a newer release and notices from Tauric Research. It checks at most once a day, in the background, and sends nothing about your runs; set `TRADINGAGENTS_NO_UPDATE_CHECK=1` to turn it off. Runs without a terminal never check.
 
 A saved report also includes `complete_report.html`, the report as one page with its sections listed beside the text, for reading in a browser, on a phone or in print. Answering the save question at the prompt also asks about the page and can open it in your browser; `--no-html` skips it, and so does `ta.save_reports(state, "NVDA", html=False)` from Python.
@@ -457,12 +469,12 @@ Please reference our work if you find *TradingAgents* provides you with some hel
 
 ### Polymarket 별칭 연결
 
-공개 검색의 기본 연결은 `direct`입니다. 회사 네트워크에서 CloudFront 별칭을
-사용하려면 실행 전에 다음 환경변수를 설정합니다.
+공개 검색은 기본적으로 `cloudfront_alias` 연결을 사용합니다. 연결 방식은 네트워크별
+자동 분기 없이 실행 환경의 `TRADINGAGENTS_POLYMARKET_TRANSPORT` 값으로 선택하며,
+공식 경로가 필요한 경우에만 `direct`를 명시합니다.
 
 ```bash
-export TRADINGAGENTS_POLYMARKET_TRANSPORT=cloudfront_alias
-# 집이나 핫스팟에서 공식 연결로 복귀
+# 공식 direct 경로가 필요한 경우에만 설정
 export TRADINGAGENTS_POLYMARKET_TRANSPORT=direct
 ```
 
@@ -483,3 +495,20 @@ HTTP Host는 공식 Gamma API를 유지합니다. **인증서는 별칭에 대�
 doctor는 공식 경로와 선택된 별칭의 HEAD 도달성을 따로 표시합니다. HEAD 응답은
 검색 GET 성공을 뜻하지 않으며, 별칭 성공이 공식 연결 복구를 뜻하지 않습니다.
 네트워크 정책 출력에는 동적으로 확인한 별칭 목적지 또는 해결 실패가 반영됩니다.
+
+### 미국 시장 마감·장후 보고서
+
+```bash
+tradingagents market-report
+tradingagents market-report --no-llm --output-dir results/market-reports
+```
+
+동부시간 20시 이후에는 당일, 그 이전·휴장일에는 직전 완료 거래일을 선택합니다. 거래소 캘린더로 휴장·조기 폐장·서머타임을 처리합니다. 기본 명령은 기존 deep 모델로 한국어 해석을 작성하며, `--no-llm`은 모델을 호출하지 않습니다. 예약 실행과 계좌 조회는 없습니다.
+
+각 실행을 새 폴더에 `report.md`, `report.html`, `evidence.json`으로 저장합니다. 지수·11개 업종 ETF·S&P 500 구성 표본의 시장 폭·매크로·기업 뉴스·장후·다음 거래일 일정을 포함합니다. 출처와 시각을 붙이고 자료가 부족하면 첫 화면에 **불완전 보고서**와 누락 범위를 표시합니다. HTML에는 표·목차·출처 링크가 있으며 외부 스크립트를 실행하지 않습니다.
+
+Yahoo의 무료 공개 자료와 무료 키가 필요한 FRED를 사용합니다. 정규장 종가는 비수정, 기간 수익률과 시장 폭은 수정 종가이며 빠진 거래일을 보간하지 않습니다. FRED는 전일까지의 빈티지를 사용하고 관측 기간·빈도·단위와 미확인 발표 시각을 구분합니다. 다음 거래일 일정은 조회 당시 정보로, 과거 시점의 공지 여부를 보장하지 않습니다.
+
+장후는 ES/NQ/YM/RTY 선물과 AAPL·MSFT·NVDA·AMZN·GOOGL·META·TSLA 표본의 20시 이전 완료된 5분 봉입니다. 전체 시장 장후 순위가 아니며 선물 기준 가격은 주식시장 폐장 시각 직전 가격으로 결제가격과 다릅니다. 실적 발표값·가이던스·정책 일정의 공개 시각을 검증하지 못하면 확인 불가로 남깁니다. LLM 실패나 근거 검사 탈락 시에도 수치·출처 보고서를 저장합니다. 검사는 사실성 보증이 아닙니다.
+
+발굴 출력에는 출처 URL·조회 시각·구성 기준일·출처 종류와 단계별 소요 시간·호출 수가 포함됩니다. 동일 실행에서 공급자 심볼 별칭의 가격·SEC·분할 결과와 실패를 재사용하며 SEC 공통 티커 표는 한 번만 읽습니다. 기존 디스크 캐시 만료 정책은 유지합니다.
