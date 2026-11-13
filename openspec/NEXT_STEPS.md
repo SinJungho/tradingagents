@@ -6,11 +6,12 @@
 
 - 시장 보고서 보강을 Orca Worker로 나눠 병합·아카이브했다: 무역가중 달러 지수, SPY 보유 종목 시장 폭과 구성 기준일, Census·BLS 발표 시각, SEC 8-K Item 2.02 실적 공시 확인, "해당 없음"(`none_found`) 상태 구분. DXY 심볼 변환 버그와 Russell 2000 HTML 응답 오류 문구도 고쳤다.
 - 현재 진행 중인 OpenSpec 변경안은 `2026-11-13-polymarket-network-verification` 하나다. E3 집 네트워크 검증만 환경 접근이 불가능해 열려 있다.
-- 최근 검증: pytest 1,830 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 17개 통과.
+- 최근 검증: pytest 1,831 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 17개 통과.
 - 실제 공개 자료 `market-report --no-llm`(2026-11-12 보고): "수집 범위 내 보고서". DXY 103.20, 11-13 PPI 08:30(BLS) 표시. 주간 실업수당 발표 시각 미수집은 머리말 고정 안내로 옮겨 품질 경고에서 뺐다.
 - 통합 테스트 후속 수정(2026-11-13): `discover` 단독 구간 실패 시 원인 문구를 표시하고, 매일 날짜가 잡히는 FRED 'FOMC Press Release'(일간 목표금리 시계열)를 다음 거래일 일정에서 뺐다.
 - 실측(2026-11-13): 실제 구간 목록에서 지수 구간 5개(Russell 2000 실패)는 2,627개 항목·고유 1,660개라 재사용으로 중복 점수 계산 967회(37%)를 피한다. FRED 선별 목록을 실제 발표명에 맞췄다(FOMC 의사록·Beige Book·G.17은 Fed 일정, 내구재는 Census 일정이 시각과 함께 제공).
 - 종목 발굴 분할 이력 병렬 조회(2026-11-13): `discover --universe sp500` 분할 단계가 순차 266~349초에서 47~59초로 줄었고 신호 출력은 같다. 가격 캐시는 당일 요청에 15분 TTL이 있어 재실행 간격에 따라 가격 단계 시간이 달라진다.
+- 종목 발굴 가격 이력 병렬 조회(2026-11-13): 가격을 새로 받는 조건에서 `discover --universe sp500` 가격 단계가 순차 130~166초에서 21초로, 전체가 89초로 줄었고 신호 출력은 같다.
 - 결정 기록(2026-11-13): Russell 2000은 무료 대체 출처가 없어 실패 표시를 유지한다. 실적 공시 표본은 7개를 유지한다.
 
 ## 우선순위
@@ -18,9 +19,12 @@
 | 우선순위 | 후속 작업 | 근거 | 규모 | 사용자 결정 |
 | --- | --- | --- | --- | --- |
 | 1 | Russell 2000 출처 재확인 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(2026-11-13 오후 재확인도 동일)(Vanguard·SSGA·FTSE Russell 무료 대체 없음). iShares 응답이 복구되는지 주기적으로 확인한다. | 작음 | 유료 출처는 범위 밖 |
-| 2 | Worker 환경 설정 | Orca 저장소 setup 스크립트에 `uv venv -q .venv && uv pip install -q --python .venv/bin/python -e '.[dev]'`를 넣으면 워크트리별 venv가 생긴다(임시 워크트리에서 약 2초·전체 pytest 통과 확인). Orca 앱 설정에서만 바꿀 수 있다. Codex 샌드박스 OpenSpec 실행법은 `openspec-change` 스킬 7절에 기록했다. 샌드박스 외부 네트워크는 열지 않고 코디네이터가 출처를 확인한다. | 작음 | Orca 앱 설정 반영 여부 |
+| 2 | SEC 조회 속도 제한과 병렬화 | 첫 실행(SEC 디스크 캐시 없음)에서 SEC 단계가 순차 약 200초로 가장 큰 남은 단계다. `sec_edgar.py`에 요청 속도 제한이 없어 SEC 권장(초당 10회 이하)을 지키는 공용 제한기를 먼저 둬야 병렬화할 수 있다. | 중간 | 불필요 |
+| 3 | 실제 LLM 보고서 재평가 | 마지막 품질 평가(`results/market-reports/2026-11-12-02bdca35497f438f9f0e8a167de58247/quality-review.md`)는 "해당 없음" 상태, SEC 8-K, BLS·Census 시각, SPY 시장 폭 도입 전 결과다. 서술이 새 근거를 정확히 쓰는지 확인 필요. | 중간 | 실제 LLM 호출 승인 필요 |
+| 4 | `results/` 관리 | 보고서·측정 산출물이 추적되지 않은 채 남는다. 아카이브 README가 참조하는 품질 평가 기록을 커밋할지 정한 뒤 `.gitignore`에 추가. | 작음 | 품질 평가 기록 커밋 여부 |
+| 5 | Worker 환경 설정 | Orca 저장소 setup 스크립트에 `uv venv -q .venv && uv pip install -q --python .venv/bin/python -e '.[dev]'`를 넣으면 워크트리별 venv가 생긴다(임시 워크트리에서 약 2초·전체 pytest 통과 확인). Orca 앱 설정에서만 바꿀 수 있다. Codex 샌드박스 OpenSpec 실행법은 `openspec-change` 스킬 7절에 기록했다. 샌드박스 외부 네트워크는 열지 않고 코디네이터가 출처를 확인한다. | 작음 | Orca 앱 설정 반영 여부 |
 | 대기 | E3 집 네트워크에서 Polymarket 공개 GET 검증 | 활성 변경안의 마지막 미완료 작업. 집 네트워크 접근 불가. | 작음 | 환경이 가능해진 뒤 실행 필요 |
 
 ## 다음 시작점
 
-바로 진행할 코드 작업은 없다. Russell 2000 출처는 주기적으로 재확인하고, Orca setup 스크립트 반영은 사용자가 앱 설정에서 결정한다. 기능 변경은 OpenSpec 변경안과 검증 기준을 먼저 작성한다.
+SEC 공용 요청 속도 제한과 병렬화가 결정 없이 진행할 수 있는 다음 코드 작업이다. 실제 LLM 재평가와 `results/` 관리는 사용자 결정 후 진행한다. 기능 변경은 OpenSpec 변경안과 검증 기준을 먼저 작성한다.
