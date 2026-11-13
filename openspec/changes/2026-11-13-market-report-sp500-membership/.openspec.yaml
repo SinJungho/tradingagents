@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-11-13
+goal: 출처 확인 관문에서 IVV 자료를 확인하지 못해 구현을 보류하고 조사 결과만 기록한다.
+skip_specs: true
