@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -108,8 +109,26 @@ def _user_agent() -> str:
 
 
 
+# SEC asks automated clients for fewer than 10 requests per second. Discovery fetches
+# from several threads, so network requests (never cache hits) share one spacing.
+_MIN_REQUEST_INTERVAL = 0.125
+_request_lock = threading.Lock()
+_next_request_at = 0.0
+
+
+def _wait_for_request_slot() -> None:
+    global _next_request_at
+    with _request_lock:
+        now = time.monotonic()
+        start = max(now, _next_request_at)
+        _next_request_at = start + _MIN_REQUEST_INTERVAL
+    if start > now:
+        time.sleep(start - now)
+
+
 def _fetch_json(url: str) -> dict:
-    """Read a public EDGAR document, respecting SEC's identification rule."""
+    """Read a public EDGAR document, respecting SEC's identification and rate rules."""
+    _wait_for_request_slot()
     try:
         response = get_with_retry(
             url,
@@ -141,6 +160,7 @@ def _cached_json(url: str, name: str) -> dict:
 
 
 _COMPANY_INDEX: ContextVar[dict | None] = ContextVar("sec_company_index", default=None)
+_index_lock = threading.Lock()
 
 
 @contextmanager
@@ -156,22 +176,23 @@ def company_index_session():
 def cik_for(ticker: str) -> str | None:
     """The filer's CIK, or None when the ticker is not a US filer."""
     state = _COMPANY_INDEX.get()
-    if state is not None and 'error' in state:
-        raise VendorUnavailableError('SEC company index unavailable in this run')
-    if state is None or 'index' not in state:
-        try:
-            table = _cached_json(_TICKERS_URL, "company_tickers.json")
-            index = {entry.get('ticker', '').upper(): f"{int(entry['cik_str']):010d}"
-                     for entry in table.values()}
-        except Exception:
-            if state is not None:
+    if state is None:
+        return _load_company_index().get(ticker.strip().upper())
+    with _index_lock:  # parallel discovery threads share one session; build its index once
+        if 'error' in state:
+            raise VendorUnavailableError('SEC company index unavailable in this run')
+        if 'index' not in state:
+            try:
+                state['index'] = _load_company_index()
+            except Exception:
                 state['error'] = True
-            raise
-        if state is not None:
-            state['index'] = index
-    else:
-        index = state['index']
-    return index.get(ticker.strip().upper())
+                raise
+    return state['index'].get(ticker.strip().upper())
+
+
+def _load_company_index() -> dict[str, str]:
+    table = _cached_json(_TICKERS_URL, "company_tickers.json")
+    return {entry.get('ticker', '').upper(): f"{int(entry['cik_str']):010d}" for entry in table.values()}
 
 
 def _span_index(fact: dict, spans: tuple[tuple[int, int], ...]) -> int | None:

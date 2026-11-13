@@ -145,3 +145,69 @@ def test_parallel_price_prefetch_keeps_per_ticker_outcomes_and_failure_order(mon
         ('BROKEN', 'Yahoo Finance price history'), ('BROKEN', 'Yahoo Finance split history')]
     momentum = {entry.ticker: entry.scores['momentum'].signal for entry in result.tickers}
     assert momentum['NODATA'] == momentum['BROKEN'] != momentum['ZZZ']
+
+
+def test_sec_requests_are_spaced_across_threads_but_cache_hits_are_not(monkeypatch, tmp_path):
+    import itertools
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+
+    starts = []
+    monkeypatch.setattr(sec_edgar, '_next_request_at', 0.0)
+    monkeypatch.setattr(sec_edgar, 'get_with_retry', lambda *a, **k: (
+        starts.append(time.monotonic()) or SimpleNamespace(json=lambda: {})))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(sec_edgar._fetch_json, ['https://data.sec.gov/x'] * 6))
+    gaps = [b - a for a, b in itertools.pairwise(sorted(starts))]
+    assert len(starts) == 6 and min(gaps) >= sec_edgar._MIN_REQUEST_INTERVAL - 0.01
+
+    monkeypatch.setattr(sec_edgar, 'get_config', lambda: {'data_cache_dir': str(tmp_path)})
+    (tmp_path / 'sec_edgar').mkdir()
+    (tmp_path / 'sec_edgar' / 'cached.json').write_text('{"hit": true}', encoding='utf-8')
+    monkeypatch.setattr(sec_edgar, '_next_request_at', time.monotonic() + 60)  # a network call would wait
+    started = time.monotonic()
+    assert sec_edgar._cached_json('https://data.sec.gov/cached', 'cached.json') == {'hit': True}
+    assert time.monotonic() - started < 1
+
+
+def test_parallel_sec_prefetch_loads_company_index_once_and_keeps_failure_order(monkeypatch):
+    loads = Mock(return_value={'0': {'ticker': 'AAA', 'cik_str': 1}, '1': {'ticker': 'BBB', 'cik_str': 2}})
+    monkeypatch.setattr(sec_edgar, '_cached_json', lambda url, name: loads() if name == 'company_tickers.json' else {})
+
+    @sec_edgar.company_index_session()
+    def lookup(symbols):
+        results, _ = sd._prefetch(sec_edgar.cik_for, symbols)
+        return results
+
+    results = lookup(['AAA', 'BBB', 'CCC', 'AAA-B'])
+    assert loads.call_count == 1
+    assert results['AAA'] == ('0000000001', None) and results['CCC'] == (None, None)
+
+    history = pd.Series(range(1, 301), index=pd.bdate_range(end='2026-11-12', periods=300), dtype=float)
+
+    def facts(symbol, _as_of):
+        if symbol == 'BROKEN':
+            raise VendorUnavailableError('synthetic SEC failure')
+        return None
+
+    def closes(symbol):
+        if symbol == 'BROKEN':
+            raise RuntimeError('synthetic price failure')
+        return history
+
+    def splits(symbol):
+        if symbol == 'BROKEN':
+            raise RuntimeError('synthetic split failure')
+        return pd.Series(dtype=float)
+
+    seen = []
+    monkeypatch.setattr(sd, '_closes', closes)
+    monkeypatch.setattr(sd, '_facts', lambda symbol, as_of: seen.append(symbol) or facts(symbol, as_of))
+    monkeypatch.setattr(sd, 'get_splits', splits)
+    monkeypatch.setattr(sd, 'get_current_date', lambda: '2026-11-12')
+    result = sd._score_tickers(('OK', 'BROKEN', 'OK'))
+    assert sorted(seen) == ['BROKEN', 'OK'] and result.calls['sec'] == 2
+    assert [entry.ticker for entry in result.tickers] == ['OK', 'BROKEN', 'OK']
+    assert [f.source for f in result.failures] == [
+        'Yahoo Finance price history', 'SEC EDGAR annual facts', 'Yahoo Finance split history']

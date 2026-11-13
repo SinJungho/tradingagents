@@ -7,6 +7,7 @@ import io
 import re
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -947,21 +948,24 @@ def _cap_band(market_cap: int | None) -> str | None:
     return None
 
 
-_YAHOO_WORKERS = 8
+_FETCH_WORKERS = 8
 
 
-def _attempt(fetch: Callable[[str], pd.Series], symbol: str) -> tuple[pd.Series | None, Exception | None]:
+def _attempt(fetch: Callable[[str], object], symbol: str) -> tuple[object, Exception | None]:
     try:
         return fetch(symbol), None
     except Exception as exc:  # handled per ticker, exactly as a sequential call would be
         return None, exc
 
 
-def _prefetch(fetch: Callable[[str], pd.Series], symbols: list[str]) -> tuple[dict, float]:
-    """Call ``fetch`` once per symbol on a bounded pool; SEC stays sequential (no rate limiter)."""
+def _prefetch(fetch: Callable[[str], object], symbols: list[str]) -> tuple[dict, float]:
+    """Call ``fetch`` once per symbol on a bounded pool; SEC requests share sec_edgar's rate limit."""
     stage = perf_counter()
-    with ThreadPoolExecutor(max_workers=_YAHOO_WORKERS) as pool:
-        results = dict(zip(symbols, pool.map(lambda symbol: _attempt(fetch, symbol), symbols), strict=True))
+    # Pool threads do not inherit context variables; carry the run's SEC company-index session.
+    contexts = [copy_context() for _ in symbols]
+    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+        outcomes = pool.map(lambda pair: pair[0].run(_attempt, fetch, pair[1]), zip(contexts, symbols, strict=True))
+        results = dict(zip(symbols, outcomes, strict=True))
     return results, perf_counter() - stage
 
 
@@ -989,10 +993,11 @@ def _score_tickers(
     timings = dict.fromkeys(('prices', 'sec', 'splits', 'scoring'), 0.0)
     calls = dict.fromkeys(('prices', 'sec', 'splits'), 0)
     reused = {}
-    # Yahoo prices and split history were sequential per symbol (166 s and 349 s of a 718 s cold
-    # run over 503 tickers), so fetch each once per provider symbol up front, in parallel.
+    # Prices, SEC facts and split history were sequential per symbol (166, 200 and 349 s of a
+    # 718 s cold run over 503 tickers), so fetch each once per provider symbol up front, in parallel.
     symbols = list(dict.fromkeys(_provider_symbol(ticker) for ticker in names))
     price_results, timings['prices'] = _prefetch(_closes, symbols)
+    fact_results, timings['sec'] = _prefetch(lambda symbol: _facts(symbol, as_of), symbols)
     split_results, timings['splits'] = _prefetch(get_splits, symbols)
     for ticker in names:
         attempted += 1
@@ -1013,17 +1018,11 @@ def _score_tickers(
             if not isinstance(price_error, NoMarketDataError):
                 failures.append(_failure(ticker, "Yahoo Finance price history", price_error))
 
-        stage = perf_counter()
         calls['sec'] += 1
-        try:
-            facts = _facts(symbol, as_of)
-        except NoMarketDataError:
-            facts = None
-        except Exception as exc:
-            facts = None
-            failures.append(_failure(ticker, "SEC EDGAR annual facts", exc))
+        facts, fact_error = fact_results[symbol]
+        if fact_error is not None and not isinstance(fact_error, NoMarketDataError):
+            failures.append(_failure(ticker, "SEC EDGAR annual facts", fact_error))
 
-        timings['sec'] += perf_counter() - stage
         calls['splits'] += 1
         splits, split_error = split_results[symbol]
         splits_available = split_error is None
