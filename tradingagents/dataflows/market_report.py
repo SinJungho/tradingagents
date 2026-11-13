@@ -30,14 +30,13 @@ FRED_US_RELEASES = frozenset({
     'consumer price index', 'employment situation', 'employment cost index',
     'job openings and labor turnover survey', 'producer price index',
     'gross domestic product', 'personal income and outlays',
-    'advance monthly sales for retail and food services',
-    'industrial production and capacity utilization', 'new residential construction',
-    'new home sales', 'durable goods', 'u.s. international trade in goods and services',
+    'advance monthly sales for retail and food services', 'new residential construction',
+    'new residential sales', 'u.s. international trade in goods and services',
     'unemployment insurance weekly claims report',
-    # 'FOMC Press Release' (FRED release 101) is dated every day for the daily target-range
-    # series, so it is not an event; FOMC decisions come from the Fed calendar.
-    'state unemployment insurance weekly claims report',
-    'fomc meeting minutes', 'beige book', 'monthly treasury statement',
+    'state unemployment insurance weekly claims report', 'monthly treasury statement',
+    # Names must match FRED release names. 'FOMC Press Release' (release 101) is dated every day
+    # for the daily target-range series; FOMC, minutes, Beige Book and G.17 come timed from the
+    # Fed calendar, and durable goods from Census.
 })
 CENSUS_US_RELEASES = frozenset({
     'advance monthly retail trade', 'advance monthly sales for retail and food services',
@@ -46,7 +45,6 @@ CENSUS_US_RELEASES = frozenset({
 })
 CENSUS_FRED_ALIASES = {
     'advance monthly retail trade': 'advance monthly sales for retail and food services',
-    'new residential sales': 'new home sales',
     'advance report on durable goods': 'durable goods',
 }
 BEA_US_RELEASES = frozenset({

@@ -195,7 +195,7 @@ class FakePublicData:
         return [
             {'release_name': 'Producer Price Index', 'release_id': 46, 'date': day.isoformat()},
             {'release_name': 'New Residential Construction', 'release_id': 93, 'date': day.isoformat()},
-            {'release_name': 'New Home Sales', 'release_id': 94, 'date': day.isoformat()},
+            {'release_name': 'New Residential Sales', 'release_id': 97, 'date': day.isoformat()},
             {'release_name': 'Gross Domestic Product', 'release_id': 53, 'date': day.isoformat()},
         ]
 
@@ -729,16 +729,21 @@ def test_us_calendar_sources_filter_noise_and_convert_bea_time(monkeypatch):
 
     day = datetime(2026, 11, 13).date()
     monkeypatch.setattr(data.fred, '_request', lambda endpoint, params: {
-        'count': 4,
+        'count': 6,
         'release_dates': [
             {'release_name': 'Producer Price Index', 'release_id': 46, 'date': day.isoformat()},
             {'release_name': 'Euro Short Term Rate', 'release_id': 502, 'date': day.isoformat()},
             {'release_name': 'Nasdaq Daily Index Data', 'release_id': 328, 'date': day.isoformat()},
             {'release_name': 'FOMC Press Release', 'release_id': 101, 'date': day.isoformat()},
+            {'release_name': 'New Residential Sales', 'release_id': 97, 'date': day.isoformat()},
+            {'release_name': 'G.17 Industrial Production and Capacity Utilization', 'release_id': 13,
+             'date': day.isoformat()},
         ],
     })
     provider = PublicMarketData()
-    assert [row['release_name'] for row in provider.calendar(day)] == ['Producer Price Index']
+    # G.17 is left to the Fed calendar, which carries its time; FRED would only duplicate it untimed.
+    assert [row['release_name'] for row in provider.calendar(day)] == ['Producer Price Index',
+                                                                      'New Residential Sales']
 
     payload = {
         'Gross Domestic Product': {'release_dates': ['2026-11-13T13:30:00+00:00']},
@@ -804,7 +809,7 @@ def test_next_day_calendar_merges_census_time_and_reports_unavailable_agencies(r
         'https://fred.stlouisfed.org/release?rid=93',
         'https://www.census.gov/economic-indicators/calendar-listview-2026.html',
     ]
-    sales = [row for row in report['evidence'] if row['label'] == 'New Home Sales']
+    sales = [row for row in report['evidence'] if row['label'] == 'New Residential Sales']
     assert len(sales) == 1
     assert sales[0]['scheduled_at'] == '2026-11-13T10:00:00-05:00'
     gdp = [row for row in report['evidence'] if row['label'] == 'Gross Domestic Product']
