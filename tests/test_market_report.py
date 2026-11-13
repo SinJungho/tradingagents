@@ -998,3 +998,63 @@ def test_narrative_number_check_allows_instrument_names_but_not_figures(report):
     assert narrate('사실: Russell 2000의 낙폭이 S&P 500보다 컸다.') == 'available'
     assert narrate('사실: Russell 2000이 2% 하락했다.') == 'failed'
     assert narrate('사실: 3분기 실적이 나왔다.') == 'failed'
+
+
+def test_late_generation_is_flagged_after_next_regular_open():
+    on_time, _ = mr.report_window(datetime.fromisoformat('2026-11-12T20:30:00-05:00'))
+    late, _ = mr.report_window(datetime.fromisoformat('2026-11-13T09:32:00-05:00'))
+    assert on_time['day'] == late['day'] == '2026-11-12'
+    assert late['next_open'] == on_time['next_open'] == '2026-11-13T14:30:00+00:00'
+    assert not on_time['late_generation'] and late['late_generation']
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-13T09:32:00-05:00')
+    assert '다음 정규장 개장' in mr.render_markdown(mr.collect_report(provider, provider.now))
+    provider.now = datetime.fromisoformat('2026-11-12T20:30:00-05:00')
+    assert '다음 정규장 개장' not in mr.render_markdown(mr.collect_report(provider, provider.now))
+
+
+def test_cross_asset_change_against_prior_session_and_missing_prior():
+    provider = FakePublicData()
+    original = provider.intraday
+
+    def intraday(symbol, day):
+        bars = original(symbol, day)
+        return bars * (0.5 if str(day) == '2026-11-11' else 1)
+
+    provider.intraday = intraday
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence']}
+    dxy = rows['미 달러 지수(ICE DXY)']
+    assert dxy['value'] == 102. and dxy['previous_value'] == 51.
+    assert dxy['change_pct'] == pytest.approx(100.)
+    assert dxy['previous_observed_at'].startswith('2026-11-11T20:00')
+
+    def no_prior(symbol, day):
+        if str(day) == '2026-11-11':
+            raise RuntimeError('no prior bars')
+        return original(symbol, day)
+
+    provider.intraday = no_prior
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence']}
+    gold = rows['금 연속 선물']
+    assert gold['value'] == 102. and gold['change_pct'] is None and '직전 거래일' in gold['change_reason']
+
+
+def test_low_value_headlines_are_excluded_summarized_and_articles_render_as_rows(report):
+    provider = FakePublicData()
+    base = provider.news('^GSPC')
+    noise = {'title': 'Arista Networks Stock: Is Wall Street Bullish or Bearish?', 'link': 'https://example.com/noise',
+             'publisher': 'Barchart', 'pub_date': datetime.fromisoformat('2026-11-12T10:00:00-05:00')}
+    provider.news = lambda symbol: [*base, noise]
+    result = mr.collect_report(provider, provider.now)
+    labels = [r['label'] for r in result['evidence']]
+    assert noise['title'] not in labels
+    summary = next(r for r in result['evidence'] if r['label'] == '제외한 저가치 헤드라인')
+    assert summary['value'] == {'count': 1, 'titles': [noise['title']]}
+    llm = Mock(invoke=Mock(side_effect=RuntimeError('capture only')))
+    mr.write_narrative(result, llm=llm)
+    sent = json.loads(llm.invoke.call_args.args[0][1][1])['evidence']
+    assert summary['id'] not in {e['id'] for e in sent}
+    markdown = mr.render_markdown(result)
+    article = next(r for r in result['evidence'] if r['label'] == 'Confirmed catalyst')
+    assert f"| {article['id']} | 11-12 18:00 | [Confirmed catalyst](<https://example.com/news>) |" in markdown
+    assert f"### {article['id']} Confirmed catalyst" not in markdown
