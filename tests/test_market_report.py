@@ -318,7 +318,7 @@ def test_successful_empty_news_and_schedules_are_none_found_and_not_warnings():
     assert all(row['status'] == 'none_found' for row in none_rows)
     warnings = mr.quality_warnings(report)
     assert not any(any(warning.startswith(row['id'] + ' ') for warning in warnings) for row in none_rows)
-    assert any(row['label'] == 'DOL 주간 실업수당 일정' and row['status'] == 'unavailable' for row in rows)
+    assert not any('DOL' in row['label'] for row in rows)
     earnings = next(row for row in rows if row['label'] == '표본 다음 거래일 실적 일정 확인')
     assert earnings['status'] == 'available'
     assert earnings['value'] == {'checked': list(mr.COMPANIES), 'scheduled': [], 'failed': []}
@@ -816,13 +816,25 @@ def test_next_day_calendar_merges_census_time_and_reports_unavailable_agencies(r
     assert ppi[0]['sources'] == ['https://fred.stlouisfed.org/release?rid=46',
                                  'https://www.bls.gov/schedule/news_release/bls.ics']
     assert not any(row['label'].startswith('BLS:') for row in report['evidence'])
-    coverage_gap = next(row for row in gaps if row['label'] == 'DOL 주간 실업수당 일정')
-    assert coverage_gap['source'] == 'https://www.dol.gov/newsroom/releases/eta'
-    assert coverage_gap['reason'] == '자동 수집 대상 아님; 주간 실업수당 발표 시각 미확인'
-    assert 'sources' not in coverage_gap
+    assert not any('DOL' in row['label'] for row in gaps)
     markdown = mr.render_markdown(report)
     assert '[원문](<https://fred.stlouisfed.org/release?rid=93>)' in markdown
     assert '[원문](<https://www.census.gov/economic-indicators/calendar-listview-2026.html>)' in markdown
+
+
+def test_weekly_claims_time_gap_is_a_fixed_scope_notice_not_a_warning():
+    provider = FakePublicData()
+    provider.calendar = lambda day: [{'release_name': 'Unemployment Insurance Weekly Claims Report',
+                                      'release_id': 180, 'date': day.isoformat()}]
+    report = mr.collect_report(provider, provider.now)
+    claims = next(row for row in report['evidence']
+                  if row['label'] == 'Unemployment Insurance Weekly Claims Report')
+    assert claims['status'] == 'available'
+    assert claims['scheduled_at'] is None
+    assert '공식 발표 시각 미확인' in claims['note']
+    assert not any('DOL' in row['label'] for row in report['evidence'])
+    assert not any(warning.startswith(claims['id'] + ' ') for warning in mr.quality_warnings(report))
+    assert '주간 실업수당 발표 시각은 수집하지 않습니다' in mr.render_markdown(report)
 
 
 def test_census_http_403_is_a_report_gap():

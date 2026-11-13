@@ -517,10 +517,6 @@ def collect_report(provider=None, now=None):
     except Exception as exc:
         missing('다음 거래일', 'BLS 공식 일정', BLS_CALENDAR_URL, error_reason(exc))
 
-    missing('다음 거래일', 'DOL 주간 실업수당 일정',
-            'https://www.dol.gov/newsroom/releases/eta',
-            '자동 수집 대상 아님; 주간 실업수당 발표 시각 미확인')
-
     official_by_name = {}
     for agency, events in (('Census', census_events), ('BEA', bea_events), ('BLS', bls_events)):
         for event in events:
@@ -741,7 +737,7 @@ def render_markdown(report):
               f"부분 {status_counts['partial']} · "
               f"오래됨 {status_counts['stale']} · 미확인 {status_counts['unavailable']} (근거 항목 기준)"),
              '부분·미확인 항목:', *(gap_lines or ['- 확인된 자료 공백 없음']), '',
-             '무료 공개 자료. 현재 구성 종목·고정 기업 표본이며 시장 전체 장후 순위가 아닙니다. 정규장 수익률은 Yahoo Close 가격 기준이며 현금 분배금은 제외합니다. 종가 결측은 가능한 경우 당일 마지막 완료 정규장 5분 봉 대용치로 표시합니다.',
+             '무료 공개 자료. 현재 구성 종목·고정 기업 표본이며 시장 전체 장후 순위가 아닙니다. 정규장 수익률은 Yahoo Close 가격 기준이며 현금 분배금은 제외합니다. 종가 결측은 가능한 경우 당일 마지막 완료 정규장 5분 봉 대용치로 표시합니다. 발표 시각은 BLS·Census·BEA·Fed 공식 일정에서만 확인하며, 주간 실업수당 발표 시각은 수집하지 않습니다.',
              '예정 일정은 조회 당시 정보로 보고 기준 시점에 알려져 있었다고 보장하지 않습니다. 결정론적 검사는 사실성 보증이 아닙니다.', '']
     for section in SECTIONS:
         lines += [f'## {section}', '']
