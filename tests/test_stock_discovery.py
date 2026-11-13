@@ -10,6 +10,7 @@ import pytest
 import requests
 
 from tradingagents import stock_discovery
+from tradingagents.dataflows.vendors.yahoo import screener as yahoo_screener
 from tradingagents.style_scores import StyleSignal
 
 
@@ -218,3 +219,202 @@ def test_nasdaq100_fetch_reports_sanitized_source_failure(monkeypatch):
         stock_discovery.fetch_nasdaq100_universe()
 
     assert "synthetic private request detail" not in str(error.value)
+
+
+@pytest.mark.unit
+def test_public_index_parser_checks_dated_large_constituent_table():
+    tickers = [f"ZX{i:03}" for i in range(490)]
+    rows = "".join(f"<tr><td>{ticker}</td><td>Company</td></tr>" for ticker in tickers)
+    page = (
+        "<p>Current components as of October 22, 2026</p>"
+        "<table><tr><th>Symbol</th><th>Company</th></tr>" + rows + "</table>"
+    )
+
+    universe = stock_discovery.parse_public_index_page(
+        page,
+        name="S&P 500",
+        source="https://example.test/sp500",
+        minimum=490,
+        maximum=510,
+    )
+
+    assert universe.as_of == "2026-10-22"
+    assert universe.as_of_label == "membership as of"
+    assert universe.tickers == tuple(tickers)
+    assert "secondary public constituent list" in universe.note
+    with pytest.raises(stock_discovery.MarketUniverseError, match="expected 490–510"):
+        stock_discovery.parse_public_index_page(
+            page.replace(rows, "<tr><td>AAA</td><td>Only one</td></tr>"),
+            name="S&P 500",
+            source="https://example.test/sp500",
+            minimum=490,
+            maximum=510,
+        )
+
+
+@pytest.mark.unit
+def test_iwm_holdings_parser_marks_russell_2000_as_proxy():
+    text = (
+        "As of November 11, 2026\n"
+        "Ticker,Name,Weight (%)\n"
+        "AAA,Alpha Company,0.2\n"
+        "BBB,Beta Company,0.1\n"
+        "BAD,Preferred Stock Example,0.0\n"
+        "CASH,Cash and Derivatives,0.0\n"
+    )
+
+    universe = stock_discovery.parse_iwm_holdings(text, minimum=2, maximum=3)
+
+    assert universe.tickers == ("AAA", "BBB")
+    assert universe.as_of == "2026-11-11"
+    assert universe.as_of_label == "holdings as of"
+    assert "proxy" in universe.note
+
+
+@pytest.mark.unit
+def test_us_listing_parser_excludes_funds_non_common_and_test_issues():
+    nasdaq = (
+        "Symbol|Security Name|Market Category|Test Issue|Financial Status|Round Lot Size|ETF|NextShares\n"
+        "AAA|Alpha Common Stock|Q|N|N|100|N|N\n"
+        "ETFQ|Example Fund|Q|N|N|100|Y|N\n"
+        "WARR|Example Warrants|Q|N|N|100|N|N\n"
+        "TEST|Test Company|Q|Y|N|100|N|N\n"
+        "File Creation Time: 1112202610:30|||||||\n"
+    )
+    other = (
+        "ACT Symbol|Security Name|Exchange|CQS Symbol|ETF|Round Lot Size|Test Issue|NASDAQ Symbol|NextShares\n"
+        "BBB|Beta Common Stock|N|BBB|N|100|N|BBB|N\n"
+        "File Creation Time: 1112202610:30||||||||\n"
+    )
+
+    universe = stock_discovery.parse_us_listed_files(nasdaq, other, minimum=2)
+
+    assert universe.tickers == ("AAA", "BBB")
+    assert universe.as_of == "2026-11-12 10:30"
+    assert universe.as_of_label == "file generated"
+
+
+@pytest.mark.unit
+def test_market_cap_screener_reads_all_pages_and_normalizes_class_symbols(monkeypatch):
+    first = [
+        {"symbol": f"AA{i:03}", "marketCap": 10_000_000_000 + i}
+        for i in range(250)
+    ]
+    screen = Mock(
+        side_effect=[
+            {"total": 251, "quotes": first},
+            {"total": 251, "quotes": [{"symbol": "BRK.B", "marketCap": 40_000_000_000}]},
+        ]
+    )
+    monkeypatch.setattr(yahoo_screener.yf, "screen", screen)
+
+    caps, as_of = stock_discovery.fetch_market_cap_snapshot()
+
+    assert len(caps) == 251
+    assert caps["BRK-B"] == 40_000_000_000
+    assert as_of.endswith("+00:00")
+    assert [call.kwargs["offset"] for call in screen.call_args_list] == [0, 250]
+
+
+@pytest.mark.unit
+def test_market_discovery_scores_overlap_once_and_reports_sections(monkeypatch):
+    sections = {
+        "sp500": stock_discovery.DiscoveryUniverse(
+            "S&P 500", "fixture://sp500", "2026-11-11", ("AAA", "BBB")
+        ),
+        "russell2000": stock_discovery.DiscoveryUniverse(
+            "Russell 2000", "fixture://russell", "2026-11-11", ("AAA", "CCC"),
+            note="synthetic proxy fixture",
+        ),
+    }
+    calls = []
+    monkeypatch.setattr(stock_discovery, "fetch_index_universe", lambda key: sections[key])
+    monkeypatch.setattr(stock_discovery, "get_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(stock_discovery, "_closes", lambda ticker: calls.append(ticker) or _closes())
+    monkeypatch.setattr(stock_discovery, "_facts", lambda _ticker, _as_of: FACTS)
+    monkeypatch.setattr(stock_discovery, "get_splits", lambda _ticker: pd.Series(dtype=float))
+
+    result = stock_discovery.discover_market(["sp500", "russell2000"])
+
+    assert (result.requested, result.attempted, result.returned) == (3, 3, 3)
+    assert calls == ["AAA", "BBB", "CCC"]
+    assert result.tickers[0].sections == ("S&P 500", "Russell 2000")
+    output = result.render()
+    assert "S&P 500: securities=2" in output
+    assert "Russell 2000: securities=2" in output
+    assert "Bullish candidates by momentum score" in output
+    assert "No LLM was called" in output
+
+
+@pytest.mark.unit
+def test_us_market_discovery_assigns_explicit_market_cap_bands(monkeypatch):
+    listing = stock_discovery.DiscoveryUniverse(
+        "US exchange-listed common stocks",
+        "fixture://listing",
+        "2026-11-12 10:30",
+        ("LARGE", "MID", "SMALL", "MICRO", "UNKNOWN"),
+        "file generated",
+    )
+    caps = {
+        "LARGE": 10_000_000_000,
+        "MID": 2_000_000_000,
+        "SMALL": 300_000_000,
+        "MICRO": 299_999_999,
+    }
+    monkeypatch.setattr(stock_discovery, "fetch_us_listed_universe", lambda: listing)
+    monkeypatch.setattr(
+        stock_discovery, "fetch_market_cap_snapshot", lambda: (caps, "2026-11-12T10:31:00+00:00")
+    )
+    monkeypatch.setattr(stock_discovery, "get_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(stock_discovery, "_closes", lambda _ticker: _closes())
+    monkeypatch.setattr(stock_discovery, "_facts", lambda _ticker, _as_of: FACTS)
+    monkeypatch.setattr(stock_discovery, "get_splits", lambda _ticker: pd.Series(dtype=float))
+
+    result = stock_discovery.discover_market(["us-listed"])
+    members_by_section = {section.name: section.tickers for section in result.sections}
+
+    assert members_by_section["Large-cap (from $10,000,000,000; no upper limit)"] == ("LARGE",)
+    assert members_by_section["Mid-cap (from $2,000,000,000; below $10,000,000,000)"] == ("MID",)
+    assert members_by_section["Small-cap (from $300,000,000; below $2,000,000,000)"] == ("SMALL",)
+    assert members_by_section["Micro-cap (from $0; below $300,000,000)"] == ("MICRO",)
+    assert members_by_section["Market cap unknown"] == ("UNKNOWN",)
+    assert result.tickers[0].market_cap_band == "largecap"
+    assert "Market-cap snapshot: Yahoo Finance, retrieved 2026-11-12T10:31:00+00:00" in result.render()
+
+
+@pytest.mark.unit
+def test_combined_market_discovery_keeps_loaded_sections_when_one_source_fails(monkeypatch):
+    sp500 = stock_discovery.DiscoveryUniverse(
+        "S&P 500", "fixture://sp500", "2026-11-11", ("AAA",)
+    )
+
+    def fetch_index(key):
+        if key == "russell2000":
+            raise stock_discovery.MarketUniverseError("synthetic source failure")
+        return sp500
+
+    monkeypatch.setattr(stock_discovery, "fetch_index_universe", fetch_index)
+    monkeypatch.setattr(stock_discovery, "get_current_date", lambda: "2026-11-12")
+    monkeypatch.setattr(stock_discovery, "_closes", lambda _ticker: _closes())
+    monkeypatch.setattr(stock_discovery, "_facts", lambda _ticker, _as_of: FACTS)
+    monkeypatch.setattr(stock_discovery, "get_splits", lambda _ticker: pd.Series(dtype=float))
+
+    result = stock_discovery.discover_market(["sp500", "russell2000"])
+
+    assert [section.name for section in result.sections] == ["S&P 500"]
+    assert result.source_failures == (("russell2000", "MarketUniverseError"),)
+    assert "russell2000: MarketUniverseError" in result.render()
+    assert [entry.ticker for entry in result.tickers] == ["AAA"]
+
+
+@pytest.mark.unit
+def test_market_discovery_rejects_invalid_combinations_before_fetching(monkeypatch):
+    fetch = Mock()
+    monkeypatch.setattr(stock_discovery, "fetch_index_universe", fetch)
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        stock_discovery.discover_market(["all", "sp500"])
+    with pytest.raises(ValueError, match="unknown universe"):
+        stock_discovery.discover_market(["russell5000"])
+
+    fetch.assert_not_called()

@@ -1,12 +1,15 @@
-"""Current deterministic style scores for supplied tickers or Nasdaq-100."""
+"""Current deterministic style signals for supplied tickers or US market sections."""
 
 from __future__ import annotations
 
+import csv
+import io
 import re
-from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from html.parser import HTMLParser
+from time import perf_counter
 
 import pandas as pd
 import requests
@@ -15,14 +18,62 @@ from tradingagents import __version__
 from tradingagents.dataflows.date_window import get_current_date
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.net import get_with_retry
+from tradingagents.dataflows.vendors.sec_edgar import company_index_session
 from tradingagents.dataflows.vendors.yahoo.market import get_splits
+from tradingagents.dataflows.vendors.yahoo.screener import market_cap_snapshot
 from tradingagents.style_scores import StyleScore, StyleSignal, _closes, _facts, score_styles
 
 MAX_TICKERS = 10
+MAX_SECTION_CANDIDATES = 10
 _TICKER = re.compile(r"^[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 NASDAQ100_SOURCE = "https://en.wikipedia.org/wiki/List_of_NASDAQ-100_companies"
+NASDAQ_LISTED_SOURCE = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
+OTHER_LISTED_SOURCE = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"
+ISHARES_IWM_SOURCE = (
+    "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/"
+    "1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
+)
 _NASDAQ100_AS_OF = re.compile(
     r"As of ([A-Z][a-z]+ \d{1,2}, \d{4}), the index comprised (\d+) securities issued by (\d+) companies"
+)
+_AS_OF_DATE = re.compile(r"as of ([A-Z][a-z]+ \d{1,2}, \d{4})", re.IGNORECASE)
+_NON_COMMON_SECURITY = re.compile(
+    r"\b(?:WARRANTS?|RIGHTS?|PREFERRED|PREFERENCE|DEBENTURES?|NOTES?|BONDS?|UNITS?|FUNDS?)\b"
+    r"|\bLIMITED PARTNERSHIP\b|\bNEXTSHARES\b",
+    re.IGNORECASE,
+)
+
+INDEX_SOURCES = {
+    "sp500": (
+        "S&P 500",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        490,
+        510,
+    ),
+    "russell1000": (
+        "Russell 1000",
+        "https://en.wikipedia.org/wiki/List_of_Russell_1000_companies",
+        950,
+        1100,
+    ),
+    "sp400": (
+        "S&P MidCap 400",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+        380,
+        420,
+    ),
+    "sp600": (
+        "S&P SmallCap 600",
+        "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
+        580,
+        620,
+    ),
+}
+MARKET_CAP_BANDS = (
+    ("largecap", "Large-cap", 10_000_000_000, None),
+    ("midcap", "Mid-cap", 2_000_000_000, 10_000_000_000),
+    ("smallcap", "Small-cap", 300_000_000, 2_000_000_000),
+    ("microcap", "Micro-cap", 0, 300_000_000),
 )
 
 
@@ -36,6 +87,24 @@ class DiscoveryUniverse:
     source: str
     as_of: str
     tickers: tuple[str, ...]
+    as_of_label: str = "membership as of"
+    note: str | None = None
+    retrieved_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat(), compare=False)
+
+    @property
+    def provenance(self) -> dict:
+        kind = ('proxy' if 'ishares.com' in self.source else
+                'secondary' if 'wikipedia.org' in self.source or 'Yahoo' in self.source else 'official')
+        urls = (self.source.split('; ') if self.source.startswith('https://') else
+                ['https://finance.yahoo.com/screener/'])
+        membership = None if 'retrieved' in self.as_of_label or 'snapshot' in self.as_of_label else self.as_of
+        return {'source_urls': urls, 'retrieved_at': self.retrieved_at,
+                'membership_as_of': membership, 'source_kind': kind}
+
+    def render_provenance(self) -> str:
+        info = self.provenance
+        return (f"Source URLs: {', '.join(info['source_urls'])}; kind={info['source_kind']}; "
+                f"retrieved_at={info['retrieved_at']}; membership_as_of={info['membership_as_of'] or 'unknown'}")
 
 
 @dataclass(frozen=True)
@@ -49,6 +118,9 @@ class DiscoveryFailure:
 class DiscoveredTicker:
     ticker: str
     scores: dict[str, StyleScore]
+    sections: tuple[str, ...] = ()
+    market_cap: int | None = None
+    market_cap_band: str | None = None
 
 
 @dataclass(frozen=True)
@@ -60,8 +132,16 @@ class DiscoveryResult:
     tickers: tuple[DiscoveredTicker, ...]
     failures: tuple[DiscoveryFailure, ...]
     universe: DiscoveryUniverse | None = None
+    sections: tuple[DiscoveryUniverse, ...] = ()
+    market_cap_as_of: str | None = None
+    source_failures: tuple[tuple[str, str], ...] = ()
+
+    timings: dict[str, float] = field(default_factory=dict, compare=False)
+    calls: dict[str, int] = field(default_factory=dict, compare=False)
 
     def render(self) -> str:
+        if self.sections:
+            return self._render_sections()
         if self.universe:
             lines = [
                 f"Deterministic style scores for {self.universe.name} constituents",
@@ -69,6 +149,7 @@ class DiscoveryResult:
                 f"Universe: {self.universe.name}; membership as of {self.universe.as_of}; "
                 f"securities={len(self.universe.tickers)}",
                 f"Universe source: {self.universe.source}",
+                self.universe.render_provenance(),
                 "Universe note: secondary public list; not an official Nasdaq index data feed.",
                 "Sources: Yahoo Finance (daily prices and splits); SEC EDGAR (annual facts)",
                 f"Counts: requested={self.requested}, attempted={self.attempted}, returned={self.returned}",
@@ -108,6 +189,75 @@ class DiscoveryResult:
         for failure in self.failures:
             if failure.ticker not in returned_tickers:
                 lines.extend(("", failure.ticker, f"  Failure: {failure.source}: {failure.reason}"))
+        if self.timings:
+            lines.append("Stage seconds: " + ", ".join(f"{k}={v:.4f}" for k, v in self.timings.items()))
+            lines.append("Provider calls: " + ", ".join(f"{k}={v}" for k, v in self.calls.items()))
+        return "\n".join(lines)
+
+    def _render_sections(self) -> str:
+        lines = [
+            "Deterministic US market discovery",
+            f"Factor data as of: {self.as_of}",
+            f"Counts: unique requested={self.requested}, attempted={self.attempted}, returned={self.returned}",
+            "Factors: existing value, growth, quality and momentum signals; no combined rank or recommendation.",
+        ]
+        if self.market_cap_as_of:
+            lines.append(f"Market-cap snapshot: Yahoo Finance, retrieved {self.market_cap_as_of}")
+        scores = {entry.ticker: entry for entry in self.tickers}
+        for section in self.sections:
+            section_results = [scores[ticker] for ticker in section.tickers if ticker in scores]
+            lines.extend(
+                (
+                    "",
+                    f"{section.name}: securities={len(section.tickers)}, scored={len(section_results)}; "
+                    f"{section.as_of_label} {section.as_of}",
+                    f"  Source: {section.source}",
+                    f"  {section.render_provenance()}",
+                )
+            )
+            if section.note:
+                lines.append(f"  Note: {section.note}")
+            for style in ("value", "growth", "quality", "momentum"):
+                counts = dict.fromkeys(StyleSignal, 0)
+                for item in section_results:
+                    counts[item.scores[style].signal] += 1
+                tally = ", ".join(
+                    f"{signal.value}={counts[signal]}" for signal in StyleSignal
+                )
+                lines.append(f"  {style}: {tally}")
+                candidates = sorted(
+                    (
+                        (item.ticker, item.scores[style].score)
+                        for item in section_results
+                        if item.scores[style].signal is StyleSignal.BULLISH
+                        and item.scores[style].score is not None
+                    ),
+                    key=lambda candidate: (-candidate[1], candidate[0]),
+                )[:MAX_SECTION_CANDIDATES]
+                if candidates:
+                    rendered = ", ".join(f"{ticker} ({score:+.4f})" for ticker, score in candidates)
+                    lines.append(f"    Bullish candidates by {style} score (up to 10): {rendered}")
+        if self.source_failures:
+            lines.extend(("", "Universe/source failures:"))
+            lines.extend(f"  {source}: {reason}" for source, reason in self.source_failures)
+        if self.failures:
+            lines.extend(("", f"Ticker data failures: {len(self.failures)}"))
+            lines.extend(
+                f"  {failure.ticker}: {failure.source} ({failure.reason})"
+                for failure in self.failures[:20]
+            )
+            if len(self.failures) > 20:
+                lines.append(f"  … and {len(self.failures) - 20} more")
+        lines.extend(
+            (
+                "",
+                "Bullish signals are deterministic screens, not validated return predictions. "
+                "No LLM was called; choose up to 10 symbols for separate TradingAgents analysis.",
+            )
+        )
+        if self.timings:
+            lines.append("Stage seconds: " + ", ".join(f"{k}={v:.4f}" for k, v in self.timings.items()))
+            lines.append("Provider calls: " + ", ".join(f"{k}={v}" for k, v in self.calls.items()))
         return "\n".join(lines)
 
 
@@ -230,7 +380,14 @@ def parse_nasdaq100_page(page: str) -> DiscoveryUniverse:
             )
         if len(set(tickers)) != len(tickers):
             raise Nasdaq100UniverseError("Nasdaq-100 source contains duplicate tickers")
-        return DiscoveryUniverse("Nasdaq-100", NASDAQ100_SOURCE, as_of, tuple(tickers))
+        return DiscoveryUniverse(
+            "Nasdaq-100",
+            NASDAQ100_SOURCE,
+            as_of,
+            tuple(tickers),
+            "membership as of",
+            "secondary public list; not an official Nasdaq index data feed",
+        )
 
     raise Nasdaq100UniverseError("Nasdaq-100 source does not contain a ticker table")
 
@@ -263,35 +420,457 @@ def fetch_nasdaq100_universe() -> DiscoveryUniverse:
         ) from None
 
 
+class MarketUniverseError(ValueError):
+    """A current market or index universe could not be validated."""
+
+
+def _fetch_text(source: str, name: str) -> str:
+    try:
+        response = get_with_retry(
+            source,
+            timeout=30,
+            provider=f"{name} universe",
+            headers={"User-Agent": f"TradingAgents/{__version__} (US market discovery)"},
+        )
+    except requests.RequestException as exc:
+        raise MarketUniverseError(f"{name} source request failed ({type(exc).__name__})") from None
+    return response.text
+
+
+def _source_as_of(text: str, *, fallback: str | None = None) -> tuple[str, str]:
+    match = _AS_OF_DATE.search(text)
+    if match:
+        try:
+            return datetime.strptime(match.group(1), "%B %d, %Y").date().isoformat(), "source date"
+        except ValueError:
+            pass
+    return fallback or get_current_date(), "source retrieved"
+
+
+def parse_public_index_page(
+    page: str,
+    *,
+    name: str,
+    source: str,
+    minimum: int,
+    maximum: int,
+) -> DiscoveryUniverse:
+    """Parse and count-check a public constituent table without trusting saved lists."""
+    parser = _Nasdaq100PageParser()
+    parser.feed(page)
+    as_of, date_label = _source_as_of(" ".join(parser.text))
+    for table in parser.tables:
+        if not table:
+            continue
+        headers = [cell.casefold().strip() for cell in table[0]]
+        column = next((i for i, header in enumerate(headers) if header in {"symbol", "ticker"}), None)
+        if column is None:
+            continue
+        tickers = []
+        for row in table[1:]:
+            if column >= len(row):
+                continue
+            ticker = row[column].strip().upper()
+            if not ticker:
+                continue
+            if not _TICKER.fullmatch(ticker):
+                raise MarketUniverseError(f"{name} source contains an invalid ticker")
+            tickers.append(ticker)
+        if not minimum <= len(tickers) <= maximum:
+            raise MarketUniverseError(
+                f"{name} source listed {len(tickers)} securities; expected {minimum}–{maximum}"
+            )
+        if len(set(tickers)) != len(tickers):
+            raise MarketUniverseError(f"{name} source contains duplicate tickers")
+        label = "membership as of" if date_label == "source date" else "list retrieved"
+        return DiscoveryUniverse(
+            name,
+            source,
+            as_of,
+            tuple(tickers),
+            label,
+            "secondary public constituent list; not an official index-provider feed",
+        )
+    raise MarketUniverseError(f"{name} source does not contain a ticker table")
+
+
+def parse_iwm_holdings(text: str, *, minimum: int = 1600, maximum: int = 2300) -> DiscoveryUniverse:
+    """Use disclosed IWM holdings as a dated Russell 2000 membership proxy."""
+    rows = list(csv.reader(io.StringIO(text)))
+    header_index = next(
+        (
+            i
+            for i, row in enumerate(rows)
+            if {cell.strip().casefold() for cell in row} >= {"ticker", "name"}
+        ),
+        None,
+    )
+    if header_index is None:
+        raise MarketUniverseError("Russell 2000 holdings are missing the Ticker/Name columns")
+    headers = [cell.strip().casefold() for cell in rows[header_index]]
+    ticker_column, name_column = headers.index("ticker"), headers.index("name")
+    asset_column = headers.index("asset class") if "asset class" in headers else None
+    tickers = []
+    for row in rows[header_index + 1 :]:
+        if max(ticker_column, name_column) >= len(row):
+            continue
+        ticker, security_name = row[ticker_column].strip().upper(), row[name_column].strip()
+        asset_class = row[asset_column].strip().casefold() if asset_column is not None and asset_column < len(row) else ""
+        if (
+            not ticker
+            or ticker in {"-", "TOTAL"}
+            or _NON_COMMON_SECURITY.search(security_name)
+            or re.search(r"\b(?:CASH|RECEIVABLES?|FUTURES?)\b", security_name, re.IGNORECASE)
+            or security_name.casefold() in {"usd", "u.s. dollar", "united states dollar"}
+            or asset_class and "equity" not in asset_class
+        ):
+            continue
+        if _TICKER.fullmatch(ticker):
+            tickers.append(ticker)
+    if not minimum <= len(tickers) <= maximum:
+        raise MarketUniverseError(
+            f"Russell 2000 holdings listed {len(tickers)} securities; expected {minimum}–{maximum}"
+        )
+    if len(set(tickers)) != len(tickers):
+        raise MarketUniverseError("Russell 2000 holdings contain duplicate tickers")
+    as_of, label = _source_as_of(text)
+    return DiscoveryUniverse(
+        "Russell 2000",
+        ISHARES_IWM_SOURCE,
+        as_of,
+        tuple(tickers),
+        "holdings as of" if label == "source date" else "holdings retrieved",
+        "iShares IWM holdings proxy; its basket can differ from official Russell 2000 membership",
+    )
+
+
+def _listing_file_timestamp(text: str) -> str | None:
+    for line in reversed(text.splitlines()):
+        if "File Creation Time" not in line:
+            continue
+        match = re.search(r"(\d{8})(\d{2}):?(\d{2})?", line)
+        if match:
+            try:
+                value = datetime.strptime(
+                    "".join(part or "00" for part in match.groups()), "%m%d%Y%H%M"
+                )
+                return value.strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                return None
+    return None
+
+
+def parse_us_listed_files(
+    nasdaq_text: str,
+    other_text: str,
+    *,
+    minimum: int = 1000,
+) -> DiscoveryUniverse:
+    """Parse Nasdaq Trader's current Nasdaq and other-exchange symbol files."""
+    selected: dict[str, None] = {}
+    for content, symbol_fields in (
+        (nasdaq_text, ("Symbol",)),
+        (other_text, ("NASDAQ Symbol", "CQS Symbol", "ACT Symbol")),
+    ):
+        reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")), delimiter="|")
+        if not reader.fieldnames:
+            raise MarketUniverseError("Nasdaq Trader listing file has no header")
+        fields = {field.strip() for field in reader.fieldnames}
+        if "Security Name" not in fields:
+            raise MarketUniverseError("Nasdaq Trader listing file is missing Security Name")
+        if not any(field in fields for field in symbol_fields):
+            raise MarketUniverseError("Nasdaq Trader listing file is missing its symbol column")
+        for row in reader:
+            name = (row.get("Security Name") or "").strip()
+            if not name or "File Creation Time" in name or _NON_COMMON_SECURITY.search(name):
+                continue
+            if (row.get("ETF") or "").strip().upper() == "Y":
+                continue
+            if (row.get("Test Issue") or "").strip().upper() == "Y":
+                continue
+            if (row.get("NextShares") or "").strip().upper() == "Y":
+                continue
+            symbol = next(
+                (
+                    candidate
+                    for field in symbol_fields
+                    if _TICKER.fullmatch(candidate := (row.get(field) or "").strip().upper())
+                ),
+                "",
+            )
+            if symbol:
+                selected.setdefault(symbol, None)
+    if len(selected) < minimum:
+        raise MarketUniverseError(
+            f"Nasdaq Trader listing files returned only {len(selected)} eligible symbols"
+        )
+    timestamps = [
+        timestamp
+        for timestamp in (_listing_file_timestamp(nasdaq_text), _listing_file_timestamp(other_text))
+        if timestamp
+    ]
+    return DiscoveryUniverse(
+        "US exchange-listed common stocks",
+        f"{NASDAQ_LISTED_SOURCE}; {OTHER_LISTED_SOURCE}",
+        max(timestamps) if timestamps else get_current_date(),
+        tuple(selected),
+        "file generated" if timestamps else "files retrieved",
+        "Nasdaq Trader files; ETF, test issues and explicitly named non-common securities excluded; OTC excluded",
+    )
+
+
+def fetch_us_listed_universe() -> DiscoveryUniverse:
+    nasdaq = _fetch_text(NASDAQ_LISTED_SOURCE, "Nasdaq-listed")
+    other = _fetch_text(OTHER_LISTED_SOURCE, "other-exchange-listed")
+    return parse_us_listed_files(nasdaq, other)
+
+
+def fetch_market_cap_snapshot() -> tuple[dict[str, int], str]:
+    """Return the Yahoo snapshot, mapping vendor-layer errors to universe errors."""
+    try:
+        return market_cap_snapshot()
+    except Exception as exc:
+        raise MarketUniverseError(
+            f"Yahoo market-cap screener failed ({type(exc).__name__})"
+        ) from None
+
+
+def fetch_index_universe(key: str) -> DiscoveryUniverse:
+    if key == "nasdaq100":
+        return fetch_nasdaq100_universe()
+    if key == "russell2000":
+        return parse_iwm_holdings(_fetch_text(ISHARES_IWM_SOURCE, "Russell 2000"))
+    name, source, minimum, maximum = INDEX_SOURCES[key]
+    return parse_public_index_page(
+        _fetch_text(source, name),
+        name=name,
+        source=source,
+        minimum=minimum,
+        maximum=maximum,
+    )
+
+
+_INDEX_ORDER = ("nasdaq100", "sp500", "russell1000", "russell2000", "sp400", "sp600")
+_INDEX_KEYS = set(_INDEX_ORDER)
+_UNIVERSE_KEYS = _INDEX_KEYS | {"us-listed", "all", *(band[0] for band in MARKET_CAP_BANDS)}
+
+
+def _universe_selection(universes: Sequence[str]) -> tuple[str, ...]:
+    if isinstance(universes, (str, bytes)) or not isinstance(universes, Sequence) or not universes:
+        raise ValueError("provide one or more --universe sections")
+    selected = tuple(value.strip().lower() for value in universes if isinstance(value, str))
+    if len(selected) != len(universes) or any(not value for value in selected):
+        raise ValueError("universe sections must be non-empty strings")
+    unknown = sorted(set(selected) - _UNIVERSE_KEYS)
+    if unknown:
+        raise ValueError(f"unknown universe section: {', '.join(unknown)}")
+    if len(set(selected)) != len(selected):
+        raise ValueError("universe sections must not be repeated")
+    if "all" in selected and len(selected) > 1:
+        raise ValueError("--universe all cannot be combined with other sections")
+    return selected
+
+
+def discover_market(
+    universes: Sequence[str],
+    *,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> DiscoveryResult:
+    """Score selected US market sections once per unique symbol; never calls an LLM."""
+    universe_started = perf_counter()
+    selected = _universe_selection(universes)
+    all_sections = selected == ("all",)
+    wants_market = all_sections or "us-listed" in selected or any(
+        key in {band[0] for band in MARKET_CAP_BANDS} for key in selected
+    )
+    listing_universe = None
+    market_caps: dict[str, int] = {}
+    market_cap_as_of = None
+    source_failures: list[tuple[str, str]] = []
+    sections: list[DiscoveryUniverse] = []
+    cap_keys = {band[0] for band in MARKET_CAP_BANDS}
+    include_size_sections = all_sections or "us-listed" in selected
+    requested_cap_keys = cap_keys if include_size_sections else cap_keys.intersection(selected)
+
+    if wants_market:
+        try:
+            listing_universe = fetch_us_listed_universe()
+            if include_size_sections or "us-listed" in selected:
+                sections.append(listing_universe)
+        except MarketUniverseError as exc:
+            if all_sections or "us-listed" in selected or requested_cap_keys:
+                raise
+            source_failures.append(("US exchange listings", type(exc).__name__))
+
+        if listing_universe:
+            try:
+                market_caps, market_cap_as_of = fetch_market_cap_snapshot()
+            except MarketUniverseError as exc:
+                source_failures.append(("Yahoo Finance market-cap screener", type(exc).__name__))
+                if requested_cap_keys:
+                    market_caps = {}
+                    if not include_size_sections:
+                        raise
+            by_band: dict[str, list[str]] = {key: [] for key in cap_keys}
+            unknown_cap: list[str] = []
+            for ticker in listing_universe.tickers:
+                cap = market_caps.get(_provider_symbol(ticker))
+                band = _cap_band(cap)
+                if band is None:
+                    unknown_cap.append(ticker)
+                else:
+                    by_band[band].append(ticker)
+            if include_size_sections:
+                for key, label, minimum, maximum in MARKET_CAP_BANDS:
+                    upper = "no upper limit" if maximum is None else f"below ${maximum:,}"
+                    sections.append(
+                        DiscoveryUniverse(
+                            f"{label} (from ${minimum:,}; {upper})",
+                            "Yahoo Finance equity screener",
+                            market_cap_as_of or get_current_date(),
+                            tuple(by_band[key]),
+                            "market-cap snapshot",
+                            "project-defined market-cap bands; not index membership",
+                        )
+                    )
+                if unknown_cap:
+                    sections.append(
+                        DiscoveryUniverse(
+                            "Market cap unknown",
+                            "Yahoo Finance equity screener",
+                            market_cap_as_of or get_current_date(),
+                            tuple(unknown_cap),
+                            "market-cap snapshot",
+                            "missing or invalid market capitalization",
+                        )
+                    )
+            else:
+                for key, label, minimum, maximum in MARKET_CAP_BANDS:
+                    if key not in requested_cap_keys:
+                        continue
+                    upper = "no upper limit" if maximum is None else f"below ${maximum:,}"
+                    sections.append(
+                        DiscoveryUniverse(
+                            f"{label} (from ${minimum:,}; {upper})",
+                            "Yahoo Finance equity screener",
+                            market_cap_as_of or get_current_date(),
+                            tuple(by_band[key]),
+                            "market-cap snapshot",
+                            "project-defined market-cap bands; not index membership",
+                        )
+                    )
+
+    requested_indexes = (
+        _INDEX_ORDER if all_sections else tuple(key for key in selected if key in _INDEX_KEYS)
+    )
+    for key in requested_indexes:
+        try:
+            sections.append(fetch_index_universe(key))
+        except (MarketUniverseError, Nasdaq100UniverseError) as exc:
+            source_failures.append((key, type(exc).__name__))
+            if not all_sections and len(selected) == 1:
+                raise MarketUniverseError(f"{key} universe failed ({type(exc).__name__})") from None
+
+    if not sections:
+        raise MarketUniverseError("no requested market section could be loaded")
+    tickers = tuple(dict.fromkeys(ticker for section in sections for ticker in section.tickers))
+    if not tickers:
+        raise MarketUniverseError("requested market sections contain no eligible tickers")
+    if not market_caps:
+        source_failures.extend(
+            (section.name, "market capitalization unavailable")
+            for section in sections
+            if section.as_of_label == "market-cap snapshot"
+        )
+    universe_seconds = perf_counter() - universe_started
+    result = _score_tickers(
+        tickers,
+        sections=tuple(sections),
+        market_caps=market_caps,
+        market_cap_as_of=market_cap_as_of,
+        source_failures=tuple(source_failures),
+        progress=progress,
+    )
+
+    return replace(result, timings={"universe": universe_seconds, **result.timings})
+
+
+def _provider_symbol(ticker: str) -> str:
+    return ticker.replace(".", "-")
+
+
+def _cap_band(market_cap: int | None) -> str | None:
+    if market_cap is None:
+        return None
+    for key, _label, minimum, maximum in MARKET_CAP_BANDS:
+        if market_cap >= minimum and (maximum is None or market_cap < maximum):
+            return key
+    return None
+
+
+@company_index_session()
 def _score_tickers(
-    names: tuple[str, ...], universe: DiscoveryUniverse | None = None
+    names: tuple[str, ...],
+    universe: DiscoveryUniverse | None = None,
+    *,
+    sections: tuple[DiscoveryUniverse, ...] = (),
+    market_caps: dict[str, int] | None = None,
+    market_cap_as_of: str | None = None,
+    source_failures: tuple[tuple[str, str], ...] = (),
+    progress: Callable[[int, int, str], None] | None = None,
 ) -> DiscoveryResult:
     as_of = get_current_date()
     results: list[DiscoveredTicker] = []
     failures: list[DiscoveryFailure] = []
     attempted = 0
+    memberships: dict[str, list[str]] = {}
+    for section in sections:
+        for ticker in section.tickers:
+            memberships.setdefault(ticker, []).append(section.name)
 
+    started = perf_counter()
+    timings = dict.fromkeys(('prices', 'sec', 'splits', 'scoring'), 0.0)
+    calls = dict.fromkeys(('prices', 'sec', 'splits'), 0)
+    reused = {}
     for ticker in names:
         attempted += 1
+        if progress:
+            progress(attempted, len(names), ticker)
+        symbol = _provider_symbol(ticker)
+        if symbol in reused:
+            cached, prior_failures = reused[symbol]
+            failures.extend(replace(failure, ticker=ticker) for failure in prior_failures)
+            if cached is not None:
+                results.append(replace(cached, ticker=ticker, sections=tuple(memberships.get(ticker, ()))))
+            continue
+        failure_start = len(failures)
+        stage = perf_counter()
+        calls['prices'] += 1
         try:
-            closes = _closes(ticker)
+            closes = _closes(symbol)
         except NoMarketDataError:
             closes = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
         except Exception as exc:
             closes = pd.Series(dtype=float, index=pd.DatetimeIndex([]))
             failures.append(_failure(ticker, "Yahoo Finance price history", exc))
 
+        timings['prices'] += perf_counter() - stage
+        stage = perf_counter()
+        calls['sec'] += 1
         try:
-            facts = _facts(ticker, as_of)
+            facts = _facts(symbol, as_of)
         except NoMarketDataError:
             facts = None
         except Exception as exc:
             facts = None
             failures.append(_failure(ticker, "SEC EDGAR annual facts", exc))
 
+        timings['sec'] += perf_counter() - stage
+        stage = perf_counter()
+        calls['splits'] += 1
         splits_available = True
         try:
-            splits = get_splits(ticker)
+            splits = get_splits(_provider_symbol(ticker))
         except NoMarketDataError:
             splits = None
             splits_available = False
@@ -300,20 +879,39 @@ def _score_tickers(
             splits_available = False
             failures.append(_failure(ticker, "Yahoo Finance split history", exc))
 
+        timings['splits'] += perf_counter() - stage
+        stage = perf_counter()
         try:
             scores = score_styles(as_of, closes, facts, splits)
         except Exception as exc:
             failures.append(_failure(ticker, "style scoring", exc))
+            reused[symbol] = (None, failures[failure_start:])
+            timings['scoring'] += perf_counter() - stage
             continue
 
+        timings['scoring'] += perf_counter() - stage
         if not splits_available:
             missing = tuple(dict.fromkeys((*scores["value"].missing, "split history")))
             scores["value"] = StyleScore(
                 "value", StyleSignal.ABSTAIN, None, missing=missing
             )
-        results.append(DiscoveredTicker(ticker, scores))
+        market_cap = (market_caps or {}).get(_provider_symbol(ticker))
+        results.append(
+            DiscoveredTicker(
+                ticker,
+                scores,
+                tuple(memberships.get(ticker, ())),
+                market_cap,
+                _cap_band(market_cap),
+            )
+        )
 
+        reused[symbol] = (results[-1], failures[failure_start:])
+
+    timings['total_scoring'] = perf_counter() - started
     return DiscoveryResult(
+        timings=timings,
+        calls=calls,
         as_of=as_of,
         requested=len(names),
         attempted=attempted,
@@ -321,6 +919,9 @@ def _score_tickers(
         tickers=tuple(results),
         failures=tuple(failures),
         universe=universe,
+        sections=sections,
+        market_cap_as_of=market_cap_as_of,
+        source_failures=source_failures,
     )
 
 

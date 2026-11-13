@@ -22,6 +22,8 @@ import logging
 import math
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import date, datetime
 from pathlib import Path
 
@@ -138,14 +140,38 @@ def _cached_json(url: str, name: str) -> dict:
     return data
 
 
+_COMPANY_INDEX: ContextVar[dict | None] = ContextVar("sec_company_index", default=None)
+
+
+@contextmanager
+def company_index_session():
+    """Reuse the common ticker table within one screen, never across runs."""
+    token = _COMPANY_INDEX.set({})
+    try:
+        yield
+    finally:
+        _COMPANY_INDEX.reset(token)
+
+
 def cik_for(ticker: str) -> str | None:
     """The filer's CIK, or None when the ticker is not a US filer."""
-    table = _cached_json(_TICKERS_URL, "company_tickers.json")
-    wanted = ticker.strip().upper()
-    for entry in table.values():
-        if entry.get("ticker", "").upper() == wanted:
-            return f"{int(entry['cik_str']):010d}"
-    return None
+    state = _COMPANY_INDEX.get()
+    if state is not None and 'error' in state:
+        raise VendorUnavailableError('SEC company index unavailable in this run')
+    if state is None or 'index' not in state:
+        try:
+            table = _cached_json(_TICKERS_URL, "company_tickers.json")
+            index = {entry.get('ticker', '').upper(): f"{int(entry['cik_str']):010d}"
+                     for entry in table.values()}
+        except Exception:
+            if state is not None:
+                state['error'] = True
+            raise
+        if state is not None:
+            state['index'] = index
+    else:
+        index = state['index']
+    return index.get(ticker.strip().upper())
 
 
 def _span_index(fact: dict, spans: tuple[tuple[int, int], ...]) -> int | None:
