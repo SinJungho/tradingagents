@@ -34,7 +34,9 @@ FRED_US_RELEASES = frozenset({
     'industrial production and capacity utilization', 'new residential construction',
     'new home sales', 'durable goods', 'u.s. international trade in goods and services',
     'unemployment insurance weekly claims report',
-    'state unemployment insurance weekly claims report', 'fomc press release',
+    # 'FOMC Press Release' (FRED release 101) is dated every day for the daily target-range
+    # series, so it is not an event; FOMC decisions come from the Fed calendar.
+    'state unemployment insurance weekly claims report',
     'fomc meeting minutes', 'beige book', 'monthly treasury statement',
 })
 CENSUS_US_RELEASES = frozenset({

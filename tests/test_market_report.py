@@ -729,11 +729,12 @@ def test_us_calendar_sources_filter_noise_and_convert_bea_time(monkeypatch):
 
     day = datetime(2026, 11, 13).date()
     monkeypatch.setattr(data.fred, '_request', lambda endpoint, params: {
-        'count': 3,
+        'count': 4,
         'release_dates': [
             {'release_name': 'Producer Price Index', 'release_id': 46, 'date': day.isoformat()},
             {'release_name': 'Euro Short Term Rate', 'release_id': 502, 'date': day.isoformat()},
             {'release_name': 'Nasdaq Daily Index Data', 'release_id': 328, 'date': day.isoformat()},
+            {'release_name': 'FOMC Press Release', 'release_id': 101, 'date': day.isoformat()},
         ],
     })
     provider = PublicMarketData()
