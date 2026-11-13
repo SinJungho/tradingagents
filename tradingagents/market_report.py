@@ -341,35 +341,36 @@ def collect_report(provider=None, now=None):
                 missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol), '보고 구간 안의 시각·링크 확인 기사 없음; 뉴스 부재를 의미하지 않음')
         except Exception as exc:
             missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol), error_reason(exc))
+    checked = list(COMPANIES)
+    with_8k_2_02 = []
+    sec_failed = []
     for symbol in COMPANIES:
         try:
             result = provider.earnings_release(symbol, day)
-            source_api = result['source_api']
-            filings = result['filings']
-            if filings:
-                for filing in filings:
-                    add('기업·실적', f'{symbol} 8-K Item 2.02 실적 공시', {
-                            'form': '8-K', 'items': '2.02',
-                            'filing_date': filing['filing_date'],
-                            'accession_number': filing['accession_number'],
-                            'accepted_at': filing['accepted_at'],
-                            'primary_document': filing['primary_document'],
-                        }, filing['url'], period=window['day'], published=filing['accepted_at'],
-                        status='available', source_kind='official', source_api=source_api,
-                        note='SEC 공식 제출; acceptanceDateTime을 America/New_York로 변환해 대상일 판정')
-            else:
-                add('기업·실적', f'{symbol} 당일 실적 공시 확인', {'official_8k_2_02': False}, source_api,
-                    period=window['day'], status='partial', source_kind='official',
-                    reason='대상일 동부시간 기준 8-K Item 2.02 제출 기록을 찾지 못함; 실적 발표 부재를 뜻하지 않음')
-        except Exception as exc:
-            add('기업·실적', f'{symbol} SEC 8-K Item 2.02 확인', None,
-                'https://www.sec.gov/edgar/search/', period=window['day'], status='unavailable',
-                source_kind='official', reason=error_reason(exc))
+        except Exception:
+            sec_failed.append(symbol)
+            continue
+        filings = result['filings']
+        if not filings:
+            continue
 
+        with_8k_2_02.append(symbol)
+        for filing in filings:
+            add('기업·실적', f'{symbol} 8-K Item 2.02 실적 공시', {
+                    'form': '8-K', 'items': '2.02',
+                    'filing_date': filing['filing_date'],
+                    'accession_number': filing['accession_number'],
+                    'accepted_at': filing['accepted_at'],
+                    'primary_document': filing['primary_document'],
+                }, filing['url'], period=window['day'], published=filing['accepted_at'],
+                status='available', source_kind='official', source_api=result['source_api'],
+                note='SEC 공식 제출; acceptanceDateTime을 America/New_York로 변환해 대상일 판정')
+
+        eps = None
+        earnings_date = None
+        yahoo_error = None
         try:
             dates = provider.earnings(symbol)
-            eps = None
-            earnings_date = None
             if dates is not None and not dates.empty:
                 for stamp, row in dates.iterrows():
                     stamp = pd.Timestamp(stamp)
@@ -382,26 +383,32 @@ def collect_report(provider=None, now=None):
                     eps = {'reported_eps': reported, 'eps_estimate': estimate, 'surprise_pct': surprise}
                     earnings_date = stamp.isoformat()
                     break
-            if eps is None:
-                missing('기업·실적', f'{symbol} Yahoo 실적 EPS', f'https://finance.yahoo.com/calendar/earnings?symbol={symbol}',
-                        '보고 대상일과 일치하는 실적 행을 확인하지 못함')
-            else:
-                complete = eps['reported_eps'] is not None and eps['eps_estimate'] not in (None, 0)
-                add('기업·실적', f'{symbol} 실적 EPS·예상치 (Yahoo 2차 출처)', eps,
-                    f'https://finance.yahoo.com/calendar/earnings?symbol={symbol}',
-                    period=window['day'], earnings_date=earnings_date,
-                    status='available' if complete else 'partial', source_kind='secondary',
-                    reason=None if complete else '실제 EPS 또는 유효한 예상 EPS가 없어 서프라이즈 미계산',
-                    calculation='surprise_pct = ((reported_eps - eps_estimate) / abs(eps_estimate)) * 100' if complete else None,
-                    note=('Yahoo 실적 일정 응답은 2차 출처; 발표 시각·수정 이력 독립 검증 아님'
-                          + ('; 서프라이즈 계산식: surprise_pct = ((reported_eps - eps_estimate) / abs(eps_estimate)) * 100'
-                             if complete else '')))
         except Exception as exc:
-            missing('기업·실적', f'{symbol} Yahoo 실적 EPS',
-                    f'https://finance.yahoo.com/calendar/earnings?symbol={symbol}', error_reason(exc))
+            yahoo_error = error_reason(exc)
+        if eps is None:
+            eps = {'reported_eps': None, 'eps_estimate': None, 'surprise_pct': None}
+        complete = eps['reported_eps'] is not None and eps['eps_estimate'] not in (None, 0)
+        add('기업·실적', f'{symbol} 실적 EPS·예상치 (Yahoo 2차 출처)', eps,
+            f'https://finance.yahoo.com/calendar/earnings?symbol={symbol}',
+            period=window['day'], earnings_date=earnings_date,
+            status='available' if complete else 'partial', source_kind='secondary',
+            reason=(f'Yahoo 조회 실패: {yahoo_error}' if yahoo_error else
+                    (None if complete else '대상일 EPS 행 또는 유효한 EPS 값이 없어 서프라이즈 미계산')),
+            calculation='surprise_pct = ((reported_eps - eps_estimate) / abs(eps_estimate)) * 100' if complete else None,
+            note=('Yahoo 실적 일정 응답은 2차 출처; 발표 시각·수정 이력 독립 검증 아님'
+                  + ('; 서프라이즈 계산식: surprise_pct = ((reported_eps - eps_estimate) / abs(eps_estimate)) * 100'
+                     if complete else '')))
 
-    add('기업·실적', '실적 가이던스', None, 'https://www.sec.gov/edgar/search/',
-        period=window['day'], status='partial', reason='구조화된 무료 출처가 없어 미확인; 공시 본문 미파싱')
+    sec_status = 'unavailable' if len(sec_failed) == len(checked) else ('partial' if sec_failed else 'available')
+    add('기업·실적', '표본 실적 공시 확인', {
+            'checked': checked, 'with_8k_2_02': with_8k_2_02, 'sec_failed': sec_failed,
+        }, 'https://www.sec.gov/edgar/search/', period=window['day'], status=sec_status,
+        source_kind='official',
+        reason=f"SEC 조회 실패 종목: {', '.join(sec_failed)}" if sec_failed else None,
+        note='표본 7개 종목의 대상일(동부시간) 8-K Item 2.02 제출 여부; 표본 밖 기업은 확인하지 않음')
+    if with_8k_2_02:
+        add('기업·실적', '실적 가이던스', None, 'https://www.sec.gov/edgar/search/',
+            period=window['day'], status='partial', reason='구조화된 무료 출처가 없어 미확인; 공시 본문 미파싱')
 
     for symbol, label in {**FUTURES, **dict.fromkeys(COMPANIES, '대형주 표본')}.items():
         try:

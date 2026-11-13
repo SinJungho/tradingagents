@@ -18,12 +18,14 @@ SEC submissions는 `filings.recent`의 병렬 배열에서 `form == 8-K`, `items
 - [x] `PublicMarketData`에 `_once`를 사용하는 SEC submissions 조회 메서드를 추가한다.
 - [x] 보고 대상일의 SEC 공식 공시 확인 및 Yahoo EPS 2차 출처 항목을 추가한다.
 - [x] 서프라이즈 계산식과 미확인 가이던스를 표시하고 다음 거래일 예정 항목을 유지한다.
+- [x] 대상일에 공시가 없는 정상 확인은 표본 요약으로 합치고 종목별 결측 행·가이던스 행은 만들지 않는다.
+- [x] SEC 일부/전체 실패는 종목 목록이 포함된 요약 상태로 표시한다.
 
 # 3. 검증
 
 - [x] 합성 submissions JSON에서 Item 2.02, 동부시간 날짜 판정, 항목 없음과 SEC 실패를 검증한다.
 - [x] 합성 Yahoo 행에서 일부 EPS 결측 시 서프라이즈 미계산을 검증한다.
-- [x] 관련 테스트: 32 passed.
-- [x] 전체 pytest: 1790 passed, 2 skipped, 24 warnings, 103 subtests passed.
+- [x] 관련 테스트: 35 passed.
+- [x] 전체 pytest: 1793 passed, 2 skipped, 24 warnings, 103 subtests passed.
 - [x] `ruff check .`와 `tradingagents --help` 통과.
 - [x] OpenSpec strict 검증은 샌드박스 미실행(오프라인 npm 캐시 없음)으로 보고한다.

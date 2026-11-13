@@ -168,9 +168,48 @@ def test_collection_bounds_sources_and_dedup(report):
     assert yahoo_eps['value']['surprise_pct'] == pytest.approx(25.)
     assert 'abs(eps_estimate)' in yahoo_eps['calculation']
     assert '서프라이즈 계산식:' in yahoo_eps['note']
-    assert next(r for r in rows if r['label'] == 'MSFT 당일 실적 공시 확인')['value'] == {'official_8k_2_02': False}
+    summary = next(r for r in rows if r['label'] == '표본 실적 공시 확인')
+    assert summary['status'] == 'available'
+    assert summary['value'] == {'checked': list(mr.COMPANIES), 'with_8k_2_02': ['AAPL'], 'sec_failed': []}
+    assert not any(r['label'].startswith(('MSFT ', 'NVDA ', 'AMZN ', 'GOOGL ', 'META ', 'TSLA '))
+                   and ('8-K Item 2.02' in r['label'] or 'EPS·예상치' in r['label']) for r in rows)
     for row in rows:
         assert {'value', 'unit', 'observation_period', 'published_at', 'retrieved_at', 'source', 'status'} <= row.keys()
+
+
+def test_no_earnings_day_has_only_available_sample_summary():
+    provider = FakePublicData()
+    provider.earnings_release = lambda symbol, day: {
+        'source_api': 'https://data.sec.gov/submissions/CIK0000000001.json', 'filings': []}
+    report = mr.collect_report(provider, provider.now)
+    rows = [row for row in report['evidence'] if row['section'] == '기업·실적']
+    summary = next(row for row in rows if row['label'] == '표본 실적 공시 확인')
+    per_ticker_earnings = [row for row in rows if row['label'] != summary['label']
+                           and ('8-K Item 2.02' in row['label'] or 'Yahoo 실적 EPS' in row['label']
+                                or 'EPS·예상치' in row['label'] or '가이던스' in row['label'])]
+    assert summary['status'] == 'available'
+    assert summary['value'] == {'checked': list(mr.COMPANIES), 'with_8k_2_02': [], 'sec_failed': []}
+    assert not [row for row in per_ticker_earnings if row['status'] != 'available']
+    assert not per_ticker_earnings
+
+
+def test_partial_sec_failure_is_recorded_in_sample_summary():
+    provider = FakePublicData()
+    original = provider.earnings_release
+
+    def earnings_release(symbol, day):
+        if symbol == 'MSFT':
+            raise RuntimeError('synthetic SEC failure')
+        return original(symbol, day)
+
+    provider.earnings_release = earnings_release
+    report = mr.collect_report(provider, provider.now)
+    summary = next(row for row in report['evidence'] if row['label'] == '표본 실적 공시 확인')
+    assert summary['status'] == 'partial'
+    assert summary['reason'] == 'SEC 조회 실패 종목: MSFT'
+    assert summary['value']['with_8k_2_02'] == ['AAPL']
+    assert summary['value']['sec_failed'] == ['MSFT']
+    assert any(row['label'] == 'AAPL 8-K Item 2.02 실적 공시' for row in report['evidence'])
 
 
 def test_missing_sector_not_ranked_and_no_repeated_daily():
@@ -232,8 +271,9 @@ def test_all_vendor_failures_still_preserve_structure(tmp_path):
         assert f'## {section}' in markdown
     assert '불완전 보고서' in markdown and 'LLM 해석 실패' in markdown
     assert 'secret credential' not in markdown and 'llm key' not in markdown
-    assert any(row['label'] == 'AAPL SEC 8-K Item 2.02 확인' and row['status'] == 'unavailable'
-               for row in report['evidence'])
+    summary = next(row for row in report['evidence'] if row['label'] == '표본 실적 공시 확인')
+    assert summary['status'] == 'unavailable'
+    assert summary['value']['sec_failed'] == list(mr.COMPANIES)
     assert len(list(path.iterdir())) == 3
 
 
@@ -363,6 +403,18 @@ def test_yahoo_partial_eps_does_not_compute_surprise():
     assert row['value']['reported_eps'] == pytest.approx(1.25)
     assert row['value']['eps_estimate'] is None and row['value']['surprise_pct'] is None
     assert row['status'] == 'partial' and row['calculation'] is None
+
+
+def test_official_filing_without_yahoo_day_row_has_partial_eps_only_for_filer():
+    provider = FakePublicData()
+    provider.earnings = lambda symbol: pd.DataFrame(
+        {'Reported EPS': [None], 'EPS Estimate': [None], 'Surprise(%)': [None]},
+        index=pd.DatetimeIndex(['2026-11-13T16:05:00-05:00']))
+    report = mr.collect_report(provider, provider.now)
+    rows = [row for row in report['evidence'] if row['label'].endswith('EPS·예상치 (Yahoo 2차 출처)')]
+    assert len(rows) == 1 and rows[0]['label'].startswith('AAPL ')
+    assert rows[0]['status'] == 'partial'
+    assert rows[0]['value'] == {'reported_eps': None, 'eps_estimate': None, 'surprise_pct': None}
 
 
 def test_cli_no_llm_and_help(monkeypatch, report, tmp_path):
