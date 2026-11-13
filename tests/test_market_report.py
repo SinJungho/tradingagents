@@ -245,7 +245,7 @@ def report():
 
 def test_collection_bounds_sources_and_dedup(report):
     rows = report['evidence']
-    dxy = next(r for r in rows if r['label'] == '미 달러 지수')
+    dxy = next(r for r in rows if r['label'] == '미 달러 지수(ICE DXY)')
     broad_dollar = next(r for r in rows if r['label'] == '무역가중 미 달러 지수(광의, 명목)')
     assert dxy['unit'] == '지수'
     assert dxy['source'] == 'https://finance.yahoo.com/quote/DX-Y.NYB/'
@@ -579,7 +579,7 @@ def test_dtwexbgs_is_distinct_and_survives_yahoo_dxy_failure():
 
     provider.intraday = intraday
     report = mr.collect_report(provider, provider.now)
-    dxy = next(row for row in report['evidence'] if row['label'] == '미 달러 지수')
+    dxy = next(row for row in report['evidence'] if row['label'] == '미 달러 지수(ICE DXY)')
     broad = next(row for row in report['evidence'] if row['label'] == '무역가중 미 달러 지수(광의, 명목)')
     assert dxy['status'] == 'unavailable'
     assert dxy['unit'] is None
@@ -944,3 +944,57 @@ def test_post_close_staleness_and_future_bar_rejection():
     assert all(e['status'] == 'stale' for e in rows)
     frame = pd.DataFrame({'Close': [999.]}, index=pd.DatetimeIndex(['2026-11-12T20:00:00-05:00']))
     assert mr.bounded_bars(frame, pd.Timestamp('2026-11-12T16:00:00-05:00'), pd.Timestamp('2026-11-12T20:00:00-05:00')).empty
+
+
+def test_news_capped_by_provider_limit_is_a_gap_not_none_found():
+    provider = FakePublicData()
+    late = [{'title': f'Next day {i}', 'link': f'https://example.com/late/{i}', 'publisher': 'Example',
+             'pub_date': datetime.fromisoformat('2026-11-13T09:00:00-05:00')} for i in range(mr.NEWS_FETCH_LIMIT)]
+    provider.news = lambda symbol: late if symbol == 'NVDA' else late[:3]
+    report = mr.collect_report(provider, provider.now)
+    nvda = next(r for r in report['evidence'] if r['label'] == 'NVDA 뉴스')
+    aapl = next(r for r in report['evidence'] if r['label'] == 'AAPL 뉴스')
+    assert nvda['status'] == 'unavailable' and '최신 기사' in nvda['reason']
+    assert aapl['status'] == 'none_found'  # fewer than the cap: the window was reached and was empty
+    assert any(w.startswith(nvda['id'] + ' ') for w in mr.quality_warnings(report))
+
+
+def test_rate_observation_mismatch_is_noted_and_roll_note_is_futures_only():
+    provider = FakePublicData()
+    periods = {'DGS2': '2026-11-09', 'DGS10': '2026-11-09', 'T10Y2Y': '2026-11-10'}
+    provider.macro = lambda series, day: {'value': 4.2, 'period': periods.get(series, '2026-11-10'),
+                                          'unit': 'Percent', 'frequency': 'Daily',
+                                          'vintage': (day - timedelta(days=1)).isoformat()}
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence']}
+    for label in ('2년 국채금리', '10년 국채금리', '10년–2년 금리차'):
+        assert '관련 금리 관측일이 서로 다름' in rows[label]['note']
+        assert '10년–2년 금리차 2026-11-10' in rows[label]['note']
+    assert '관측일' not in rows['정책금리(실효 연방기금 월평균)']['note']
+    assert '롤' not in rows['미 달러 지수(ICE DXY)']['note']
+    assert '롤' in rows['WTI 연속 선물']['note']
+
+    provider.macro = lambda series, day: {'value': 4.2, 'period': '2026-11-10', 'unit': 'Percent',
+                                          'frequency': 'Daily', 'vintage': (day - timedelta(days=1)).isoformat()}
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence']}
+    assert '관측일이 서로 다름' not in rows['10년–2년 금리차']['note']
+
+
+def test_narrative_prompt_asks_for_the_largest_movers(report):
+    llm = Mock(invoke=Mock(side_effect=RuntimeError('stop after capturing the prompt')))
+    mr.write_narrative(report, llm=llm)
+    system_prompt = llm.invoke.call_args.args[0][0][1]
+    assert '가장 크게 움직인 지수·업종·대형주' in system_prompt
+
+
+def test_narrative_number_check_allows_instrument_names_but_not_figures(report):
+    valid = report['evidence'][0]['id']
+
+    def narrate(text):
+        llm = Mock(invoke=Mock(return_value=SimpleNamespace(content=json.dumps([
+            {'section': '핵심 요약', 'text': text, 'evidence_ids': [valid]}]))))
+        mr.write_narrative(report, llm=llm)
+        return report['llm_status']
+
+    assert narrate('사실: Russell 2000의 낙폭이 S&P 500보다 컸다.') == 'available'
+    assert narrate('사실: Russell 2000이 2% 하락했다.') == 'failed'
+    assert narrate('사실: 3분기 실적이 나왔다.') == 'failed'

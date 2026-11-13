@@ -18,8 +18,10 @@ from tradingagents.stock_discovery import fetch_index_universe, fetch_spy_holdin
 INDICES = {'^GSPC': 'S&P 500', '^IXIC': 'Nasdaq Composite', '^DJI': 'Dow Jones', '^RUT': 'Russell 2000', '^VIX': 'VIX'}
 SECTORS = dict(zip(('XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLRE', 'XLK', 'XLU'),
                    ('커뮤니케이션', '경기소비재', '필수소비재', '에너지', '금융', '헬스케어', '산업재', '소재', '부동산', '정보기술', '유틸리티'), strict=True))
-MARKETS = {'DX-Y.NYB': ('미 달러 지수', '지수'), 'CL=F': ('WTI 연속 선물', 'USD/배럴'), 'GC=F': ('금 연속 선물', 'USD/트로이온스')}
+MARKETS = {'DX-Y.NYB': ('미 달러 지수(ICE DXY)', '지수'), 'CL=F': ('WTI 연속 선물', 'USD/배럴'), 'GC=F': ('금 연속 선물', 'USD/트로이온스')}
 FUTURES = {'ES=F': 'S&P 500 선물', 'NQ=F': 'Nasdaq 100 선물', 'YM=F': 'Dow 선물', 'RTY=F': 'Russell 2000 선물'}
+# Yahoo returns only the newest N articles, so a late run can push the whole report window out.
+NEWS_FETCH_LIMIT = 50
 COMPANIES = ('AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA')
 MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS10': '10년 국채금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
 BEA_RELEASES_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
@@ -133,7 +135,7 @@ class PublicMarketData:
 
     def news(self, symbol):
         return self._once(('news', symbol), lambda: [
-            _extract_article_data(a) for a in self.ticker(symbol).get_news(count=12) or []])
+            _extract_article_data(a) for a in self.ticker(symbol).get_news(count=NEWS_FETCH_LIMIT) or []])
 
     def macro(self, series, day):
         # FRED vintages have date precision, not intraday publication times.

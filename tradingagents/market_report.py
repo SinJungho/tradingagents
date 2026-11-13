@@ -22,6 +22,7 @@ from tradingagents.dataflows.market_report import (
     INDICES,
     MACRO,
     MARKETS,
+    NEWS_FETCH_LIMIT,
     SECTORS,
     PublicMarketData,
     error_reason,
@@ -33,6 +34,10 @@ from tradingagents.stock_discovery import SPY_HOLDINGS_SOURCE
 
 ET = ZoneInfo('America/New_York')
 SECTIONS = ('핵심 요약', '지수', '업종', '시장 폭·참여도', '매크로', '기업·실적', '장후', '다음 거래일', '출처·누락 항목')
+# Instrument names such as "Russell 2000" carry digits but are not figures; the narrative
+# number check ignores them so naming an index does not reject the whole narrative.
+NAMED_FIGURES = tuple(sorted({n for n in (*INDICES.values(), *FUTURES.values(), 'S&P 500', 'Nasdaq 100')
+                              if re.search(r'\d', n)}, key=len, reverse=True))
 
 
 def report_window(now=None):
@@ -322,6 +327,7 @@ def collect_report(provider=None, now=None):
     except Exception as exc:
         missing('시장 폭·참여도', 'S&P 500 구성 종목 시장 폭', 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies', error_reason(exc))
 
+    rate_rows = {}
     for series, label in MACRO.items():
         source = f'https://fred.stlouisfed.org/series/{series}'
         try:
@@ -331,13 +337,19 @@ def collect_report(provider=None, now=None):
                 raise ValueError('Invalid macro observation or vintage')
             age = (day - pd.Timestamp(data['period']).date()).days
             max_age = {'Daily': 10, 'Monthly': 100, 'Quarterly': 200}.get(data['frequency'], 100)
-            add('매크로', label, data['value'], source, unit=data['unit'], period=data['period'],
+            row = add('매크로', label, data['value'], source, unit=data['unit'], period=data['period'],
                 frequency=data['frequency'], vintage=data['vintage'],
                 status='stale' if age > max_age else 'available',
                 reason='관측 기간이 통상 발표 주기보다 오래됨' if age > max_age else None,
                 note='전일까지의 FRED 빈티지; 정확한 발표 시각 미확인')
+            if series in ('DGS2', 'DGS10', 'T10Y2Y'):
+                rate_rows[series] = row
         except Exception as exc:
             missing('매크로', label, source, error_reason(exc))
+    if len({row['observation_period'] for row in rate_rows.values()}) > 1:
+        dates = ', '.join(f"{row['label']} {row['observation_period']}" for row in rate_rows.values())
+        for row in rate_rows.values():
+            row['note'] += f'; 관련 금리 관측일이 서로 다름({dates})'
     for symbol, (label, unit) in MARKETS.items():
         # Futures/FX daily candles can include prices after 20 ET. Use bounded intraday bars.
         try:
@@ -347,7 +359,7 @@ def collect_report(provider=None, now=None):
                 raise ValueError('No timestamped observation')
             add('매크로', label, finite(selected['Close'].iloc[-1]), quote_url(symbol), unit=unit,
                 period=window['day'], observed_at=(selected.index[-1] + pd.Timedelta(minutes=5)).isoformat(),
-                note='20시 이전 마지막 5분 봉; 선물은 연속물로 롤 영향 가능')
+                note='20시 이전 마지막 5분 봉' + ('; 연속 선물이라 롤 영향 가능' if symbol.endswith('=F') else ''))
         except Exception as exc:
             missing('매크로', label, quote_url(symbol), error_reason(exc))
 
@@ -376,7 +388,13 @@ def collect_report(provider=None, now=None):
                     seen[key] = row
                     seen[title_key] = row
                 accepted += 1
-            if not accepted:
+            dated = [pd.Timestamp(a['pub_date']) for a in articles
+                     if a.get('pub_date') is not None and a['pub_date'].tzinfo is not None]
+            if not accepted and len(articles) >= NEWS_FETCH_LIMIT and dated and min(dated) > cutoff:
+                # The provider's newest-N cap, not an empty window: the report window was never reached.
+                missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol),
+                        f'공급자 최신 기사 {NEWS_FETCH_LIMIT}건이 모두 보고 구간 이후라 구간 기사를 확인하지 못함')
+            elif not accepted:
                 none_found('기업·실적', f'{symbol} 뉴스', quote_url(symbol), '보고 구간 안의 시각·링크 확인 기사 없음; 뉴스 부재를 의미하지 않음')
         except Exception as exc:
             missing('기업·실적', f'{symbol} 뉴스', quote_url(symbol), error_reason(exc))
@@ -665,6 +683,7 @@ def write_narrative(report, config=None, llm=None):
              '모든 주장에 실제 근거 ID를 연결한다. 핵심 요약은 변화·근거·반대 근거·추가 확인 조건을 설명한다. '
              '각 업종은 수익률과 확인된 관련 기사만 연결하며 촉매가 없으면 원인 미확인이라고 한다. '
              'partial 자료를 쓰면 대용치·표본·제한 이유를 문장에 드러낸다. '
+             '핵심 요약은 표본에서 당일 가장 크게 움직인 지수·업종·대형주를 빠뜨리지 않는다. '
              '사실과 해석을 구분하고 인과관계·숫자·확률·목표가·개인 매매 추천을 만들지 않는다. '
              '표에 있는 숫자를 반복하지 말고 정성적 해석만 쓴다. 확인 조건은 전망이 아닌 조건으로 쓴다.'),
             ('human', json.dumps({'window': report['window'], 'evidence': compact}, ensure_ascii=False)),
@@ -678,7 +697,7 @@ def write_narrative(report, config=None, llm=None):
                     or not isinstance(claim.get('text'), str) or not claim.get('evidence_ids')
                     or not isinstance(claim['evidence_ids'], list)
                     or any(not isinstance(i, str) or i not in allowed for i in claim['evidence_ids'])
-                    or re.search(r'\d|[%％]', claim['text'])):
+                    or re.search(r'\d|[%％]', re.sub('|'.join(map(re.escape, NAMED_FIGURES)), '', claim['text']))):
                 report['narrative_rejected'] = True
                 raise ValueError('Unsupported narrative')
         report['narrative'] = claims
