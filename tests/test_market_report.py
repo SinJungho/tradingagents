@@ -40,6 +40,22 @@ def test_naive_clock_rejected():
         mr.report_window(datetime(2026, 11, 12))
 
 
+def test_public_market_data_prefers_spy_and_falls_back_to_wikipedia(monkeypatch):
+    spy = SimpleNamespace(tickers=("AAA",), source=mr.SPY_HOLDINGS_SOURCE)
+    wikipedia = SimpleNamespace(tickers=("BBB",), source="https://en.wikipedia.org/wiki/sp500")
+    fetch_spy = Mock(return_value=spy)
+    fetch_wikipedia = Mock(return_value=wikipedia)
+    monkeypatch.setattr(market_data, "fetch_spy_holdings_universe", fetch_spy)
+    monkeypatch.setattr(market_data, "fetch_index_universe", fetch_wikipedia)
+
+    assert PublicMarketData().universe() is spy
+    fetch_wikipedia.assert_not_called()
+
+    fetch_spy.side_effect = ValueError("synthetic invalid workbook")
+    assert PublicMarketData().universe() is wikipedia
+    fetch_wikipedia.assert_called_once_with("sp500")
+
+
 def test_return_alignment_uses_close_and_preserves_missing_sessions():
     dates = pd.bdate_range('2026-10-01', periods=21)
     frame = pd.DataFrame({'Close': range(200, 221), 'Adj Close': range(100, 121)}, index=dates)
@@ -204,6 +220,37 @@ def test_intraday_close_proxy_fills_sector_and_breadth_with_provenance():
     assert breadth['intraday_proxy_symbols'] == ['AAA', 'BBB', 'CCC']
     assert all(breadth['close_source_by_symbol'][s] == 'same_day_5m_regular_close_proxy'
                for s in ('AAA', 'BBB', 'CCC'))
+
+
+def test_breadth_marks_spy_proxy_date_and_wikipedia_fallback_unknown():
+    provider = FakePublicData()
+    provider.universe = lambda: SimpleNamespace(
+        tickers=("AAA", "BBB", "CCC"), source=mr.SPY_HOLDINGS_SOURCE,
+        as_of="2026-11-11", as_of_label="holdings as of",
+    )
+
+    report = mr.collect_report(provider, provider.now)
+    spy_breadth = next(row for row in report["evidence"] if row["source"] == mr.SPY_HOLDINGS_SOURCE)
+
+    assert spy_breadth["source_kind"] == "etf_holdings_proxy"
+    assert spy_breadth["membership_as_of"] == "2026-11-11"
+    assert "공식 S&P 500 지수 구성 아님" in spy_breadth["label"]
+    markdown = mr.render_markdown(report)
+    assert "구성 기준일: 2026-11-11" in markdown
+    assert "SPY ETF 보유 종목 대용치이며 공식 S&P 500 지수 구성 목록이 아님" in markdown
+
+    provider.universe = lambda: SimpleNamespace(
+        tickers=("AAA", "BBB", "CCC"),
+        source="https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        as_of="2026-11-11", as_of_label="membership as of",
+    )
+    fallback_report = mr.collect_report(provider, provider.now)
+    fallback = next(row for row in fallback_report["evidence"] if "wikipedia.org" in row["source"])
+
+    assert fallback["source_kind"] == "secondary"
+    assert fallback["membership_as_of"] is None
+    assert "구성 기준일 미확인" in fallback["note"]
+    assert "Wikipedia 현재 구성표 대체 자료; 구성 기준일 미확인" in mr.render_markdown(fallback_report)
 
 
 def test_all_vendor_failures_still_preserve_structure(tmp_path):

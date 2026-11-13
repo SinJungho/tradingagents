@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
 from types import SimpleNamespace
 from unittest.mock import Mock
+from xml.etree import ElementTree as ET
+from zipfile import ZipFile
 
 import pandas as pd
 import pytest
@@ -44,6 +47,47 @@ def _wiki_page(tickers: list[str], *, declared_count: int | None = None) -> str:
         f"<p>As of October 22, 2026, the index comprised {count} securities issued by 100 companies.</p>"
         f"<table><tr><th>Ticker</th><th>Company</th></tr>{rows}</table>"
     )
+
+
+def _spy_xlsx(rows: list[list[object]]) -> bytes:
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    strings = []
+    indices = {}
+    shared_root = ET.Element(f"{namespace}sst", count="0", uniqueCount="0")
+    sheet_root = ET.Element(f"{namespace}worksheet")
+    sheet_data = ET.SubElement(sheet_root, f"{namespace}sheetData")
+
+    def column_name(index: int) -> str:
+        result = ""
+        while index:
+            index, remainder = divmod(index - 1, 26)
+            result = chr(ord("A") + remainder) + result
+        return result
+
+    for row_number, values in enumerate(rows, 1):
+        row_node = ET.SubElement(sheet_data, f"{namespace}row", r=str(row_number))
+        for column, value in enumerate(values, 1):
+            if value in (None, ""):
+                continue
+            cell = ET.SubElement(row_node, f"{namespace}c", r=f"{column_name(column)}{row_number}")
+            if isinstance(value, str):
+                if value not in indices:
+                    indices[value] = len(strings)
+                    strings.append(value)
+                cell.set("t", "s")
+                ET.SubElement(cell, f"{namespace}v").text = str(indices[value])
+            else:
+                ET.SubElement(cell, f"{namespace}v").text = str(value)
+    for value in strings:
+        item = ET.SubElement(shared_root, f"{namespace}si")
+        ET.SubElement(item, f"{namespace}t").text = value
+    shared_root.set("count", str(len(strings)))
+    shared_root.set("uniqueCount", str(len(strings)))
+    output = io.BytesIO()
+    with ZipFile(output, "w") as workbook:
+        workbook.writestr("xl/sharedStrings.xml", ET.tostring(shared_root))
+        workbook.writestr("xl/worksheets/sheet1.xml", ET.tostring(sheet_root))
+    return output.getvalue()
 
 
 @pytest.mark.unit
@@ -269,6 +313,49 @@ def test_iwm_holdings_parser_marks_russell_2000_as_proxy():
     assert universe.as_of == "2026-11-11"
     assert universe.as_of_label == "holdings as of"
     assert "proxy" in universe.note
+
+
+@pytest.mark.unit
+def test_spy_holdings_xlsx_parser_uses_dated_equity_tickers_only():
+    rows = [
+        ["Fund Name:", "State Street SPDR S&P 500 ETF Trust"],
+        ["Ticker Symbol:", "SPY"],
+        ["Holdings:", "As of 11-Nov-2026"],
+        ["Name", "Ticker", "Identifier", "SEDOL", "Weight", "Sector", "Shares Held", "Local Currency"],
+    ]
+    rows.extend([f"Synthetic Company {i}", f"AA{i:04}", str(i), "", 1.25, "-", 1000.0, "USD"]
+                for i in range(495))
+    rows.extend([
+        ["Berkshire Hathaway Class B", "BRK.B", "", "", 1.0, "Financials", 1, "USD"],
+        ["Brown-Forman Class B", "BF.B", "", "", 1.0, "Consumer Staples", 1, "USD"],
+        ["Cash", "-", "", "", 0.0, "-", 1, "USD"],
+        ["Contingent Value Right", "2602335D", "", "", 0.0, "-", 1, "USD"],
+        ["Treasury Future", "ES", "", "", 0.0, "-", 1, "USD"],
+        [],
+    ])
+
+    universe = stock_discovery.parse_spy_holdings_xlsx(_spy_xlsx(rows))
+
+    assert len(universe.tickers) == 497
+    assert universe.tickers[-2:] == ("BRK.B", "BF.B")
+    assert universe.as_of == "2026-11-11"
+    assert universe.as_of_label == "holdings as of"
+    assert universe.source == stock_discovery.SPY_HOLDINGS_SOURCE
+    assert universe.provenance["source_kind"] == "proxy"
+    assert "not official S&P 500 index membership" in universe.note
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("count", [494, 511])
+def test_spy_holdings_xlsx_parser_rejects_ticker_counts_outside_range(count):
+    rows = [
+        ["Holdings:", "As of 11-Nov-2026"],
+        ["Name", "Ticker"],
+        *[[f"Company {i}", f"AA{i:04}"] for i in range(count)],
+    ]
+
+    with pytest.raises(stock_discovery.MarketUniverseError, match=f"listed {count} securities; expected 495–510"):
+        stock_discovery.parse_spy_holdings_xlsx(_spy_xlsx(rows))
 
 
 @pytest.mark.unit

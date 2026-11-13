@@ -10,6 +10,8 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from time import perf_counter
+from xml.etree import ElementTree as ET
+from zipfile import BadZipFile, ZipFile
 
 import pandas as pd
 import requests
@@ -32,6 +34,10 @@ OTHER_LISTED_SOURCE = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.t
 ISHARES_IWM_SOURCE = (
     "https://www.ishares.com/us/products/239710/ishares-russell-2000-etf/"
     "1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund"
+)
+SPY_HOLDINGS_SOURCE = (
+    "https://www.ssga.com/us/en/intermediary/library-content/products/fund-data/"
+    "etfs/us/holdings-daily-us-en-spy.xlsx"
 )
 _NASDAQ100_AS_OF = re.compile(
     r"As of ([A-Z][a-z]+ \d{1,2}, \d{4}), the index comprised (\d+) securities issued by (\d+) companies"
@@ -93,7 +99,7 @@ class DiscoveryUniverse:
 
     @property
     def provenance(self) -> dict:
-        kind = ('proxy' if 'ishares.com' in self.source else
+        kind = ('proxy' if 'ishares.com' in self.source or 'ssga.com' in self.source else
                 'secondary' if 'wikipedia.org' in self.source or 'Yahoo' in self.source else 'official')
         urls = (self.source.split('; ') if self.source.startswith('https://') else
                 ['https://finance.yahoo.com/screener/'])
@@ -437,6 +443,19 @@ def _fetch_text(source: str, name: str) -> str:
     return response.text
 
 
+def _fetch_bytes(source: str, name: str) -> bytes:
+    try:
+        response = get_with_retry(
+            source,
+            timeout=30,
+            provider=f"{name} universe",
+            headers={"User-Agent": f"TradingAgents/{__version__} (US market discovery)"},
+        )
+    except requests.RequestException as exc:
+        raise MarketUniverseError(f"{name} source request failed ({type(exc).__name__})") from None
+    return response.content
+
+
 def _source_as_of(text: str, *, fallback: str | None = None) -> tuple[str, str]:
     match = _AS_OF_DATE.search(text)
     if match:
@@ -542,6 +561,122 @@ def parse_iwm_holdings(text: str, *, minimum: int = 1600, maximum: int = 2300) -
         "holdings as of" if label == "source date" else "holdings retrieved",
         "iShares IWM holdings proxy; its basket can differ from official Russell 2000 membership",
     )
+
+
+def _xlsx_column_index(reference: str) -> int | None:
+    match = re.match(r"[A-Z]+", reference)
+    if not match:
+        return None
+    index = 0
+    for letter in match.group():
+        index = index * 26 + ord(letter) - ord("A") + 1
+    return index - 1
+
+
+def _xlsx_cell_value(cell, shared_strings: list[str]) -> str:
+    value = cell.find("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}v")
+    if cell.get("t") == "s":
+        if value is None or value.text is None:
+            return ""
+        try:
+            index = int(value.text)
+        except ValueError:
+            raise MarketUniverseError("SPY holdings workbook has an invalid shared string index") from None
+        if not 0 <= index < len(shared_strings):
+            raise MarketUniverseError("SPY holdings workbook has an invalid shared string index")
+        return shared_strings[index]
+    if cell.get("t") == "inlineStr":
+        return "".join(
+            item.text or ""
+            for item in cell.iter("{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t")
+        )
+    return value.text if value is not None and value.text else ""
+
+
+def parse_spy_holdings_xlsx(
+    content: bytes,
+    *,
+    minimum: int = 495,
+    maximum: int = 510,
+) -> DiscoveryUniverse:
+    """Parse SPY's dated ETF holdings sheet without an Excel dependency."""
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    try:
+        with ZipFile(io.BytesIO(content)) as workbook:
+            shared_root = ET.fromstring(workbook.read("xl/sharedStrings.xml"))
+            sheet_root = ET.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+    except (BadZipFile, KeyError, ET.ParseError, OSError):
+        raise MarketUniverseError("SPY holdings workbook could not be read") from None
+    shared_strings = [
+        "".join(item.text or "" for item in entry.iter(f"{namespace}t"))
+        for entry in shared_root.findall(f"{namespace}si")
+    ]
+    rows = []
+    for row in sheet_root.findall(f".//{namespace}row"):
+        cells = {}
+        for cell in row.findall(f"{namespace}c"):
+            column = _xlsx_column_index(cell.get("r", ""))
+            if column is not None:
+                cells[column] = _xlsx_cell_value(cell, shared_strings)
+        rows.append([cells.get(i, "") for i in range(max(cells, default=-1) + 1)])
+
+    date = next(
+        (
+            match.group(1)
+            for row in rows
+            for cell in row
+            if (match := re.fullmatch(r"As of\s+(\d{1,2}-[A-Za-z]{3}-\d{4})", cell.strip(), re.I))
+        ),
+        None,
+    )
+    if date is None:
+        raise MarketUniverseError("SPY holdings workbook is missing its as-of date")
+    try:
+        as_of = datetime.strptime(date, "%d-%b-%Y").date().isoformat()
+    except ValueError:
+        raise MarketUniverseError("SPY holdings workbook has an invalid as-of date") from None
+
+    header_index = next(
+        (i for i, row in enumerate(rows) if {cell.strip().casefold() for cell in row} >= {"name", "ticker"}),
+        None,
+    )
+    if header_index is None:
+        raise MarketUniverseError("SPY holdings workbook is missing the Name/Ticker columns")
+    headers = [cell.strip().casefold() for cell in rows[header_index]]
+    name_column, ticker_column = headers.index("name"), headers.index("ticker")
+    tickers = []
+    for row in rows[header_index + 1 :]:
+        if max(name_column, ticker_column) >= len(row):
+            continue
+        name, ticker = row[name_column].strip(), row[ticker_column].strip().upper()
+        if (
+            not ticker
+            or ticker in {"-", "TOTAL"}
+            or _NON_COMMON_SECURITY.search(name)
+            or re.search(r"\b(?:CASH|RECEIVABLES?|FUTURES?)\b", name, re.IGNORECASE)
+            or name.casefold() in {"usd", "u.s. dollar", "united states dollar"}
+        ):
+            continue
+        if _TICKER.fullmatch(ticker):
+            tickers.append(ticker)
+    if not minimum <= len(tickers) <= maximum:
+        raise MarketUniverseError(
+            f"SPY holdings listed {len(tickers)} securities; expected {minimum}–{maximum}"
+        )
+    if len(set(tickers)) != len(tickers):
+        raise MarketUniverseError("SPY holdings contain duplicate tickers")
+    return DiscoveryUniverse(
+        "S&P 500 SPY holdings proxy",
+        SPY_HOLDINGS_SOURCE,
+        as_of,
+        tuple(tickers),
+        "holdings as of",
+        "SPDR SPY holdings proxy; not official S&P 500 index membership",
+    )
+
+
+def fetch_spy_holdings_universe() -> DiscoveryUniverse:
+    return parse_spy_holdings_xlsx(_fetch_bytes(SPY_HOLDINGS_SOURCE, "SPY"))
 
 
 def _listing_file_timestamp(text: str) -> str | None:

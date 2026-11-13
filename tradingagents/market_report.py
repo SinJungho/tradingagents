@@ -26,6 +26,7 @@ from tradingagents.dataflows.market_report import (
     finite,
     quote_url,
 )
+from tradingagents.stock_discovery import SPY_HOLDINGS_SOURCE
 
 ET = ZoneInfo('America/New_York')
 SECTIONS = ('핵심 요약', '지수', '업종', '시장 폭·참여도', '매크로', '기업·실적', '장후', '다음 거래일', '출처·누락 항목')
@@ -261,12 +262,21 @@ def collect_report(provider=None, now=None):
             if histories[symbol].iloc[-2:].isna().any():
                 excluded.append(symbol)
         stats = breadth_stats(members)
-        add('시장 폭·참여도', '현재 S&P 500 구성 종목 표본의 시장 폭', stats, universe.source,
-            unit='비율 % / 종목 수', period=window['day'], membership_as_of=universe.as_of if 'retrieved' not in universe.as_of_label else None,
+        spy_proxy = universe.source == SPY_HOLDINGS_SOURCE
+        wikipedia_fallback = 'wikipedia.org' in universe.source
+        breadth_label = ('SPY 보유 종목 대용치의 시장 폭 (공식 S&P 500 지수 구성 아님)' if spy_proxy
+                         else '현재 S&P 500 구성 종목 표본의 시장 폭')
+        membership_as_of = (universe.as_of if spy_proxy else
+                            None if wikipedia_fallback or 'retrieved' in universe.as_of_label else universe.as_of)
+        membership_note = ('SPY ETF 보유 종목 대용치이며 공식 S&P 500 지수 구성 목록이 아님' if spy_proxy
+                           else 'Wikipedia 현재 구성표 대체 자료; 구성 기준일 미확인' if wikipedia_fallback else None)
+        add('시장 폭·참여도', breadth_label, stats, universe.source,
+            unit='비율 % / 종목 수', period=window['day'], membership_as_of=membership_as_of,
             status='partial' if any(stats[f'excluded_{p}'] for p in (1, 50, 200)) or proxy_symbols or split_blocked_symbols else 'available',
             reason=('구간별 이력 부족; 성공 종목만 분모로 사용' if any(stats[f'excluded_{p}'] for p in (1, 50, 200))
                     else ('해당일 5분 봉 종가 대용치 또는 분할 제외 종목 포함' if proxy_symbols or split_blocked_symbols else None)),
-            excluded_symbols=excluded, source_kind='secondary',
+            excluded_symbols=excluded, source_kind='etf_holdings_proxy' if spy_proxy else 'secondary',
+            note=membership_note,
             constituents=list(members),
             price_basis='Yahoo Close 가격수익률; 현금 분배금 제외; 결측 종가는 당일 마지막 완료 정규장 5분 봉으로 보완',
             intraday_proxy_symbols=proxy_symbols, split_blocked_symbols=split_blocked_symbols,

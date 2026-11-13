@@ -13,7 +13,7 @@ import yfinance as yf
 from tradingagents.dataflows.net import get_with_retry
 from tradingagents.dataflows.vendors import fred
 from tradingagents.dataflows.vendors.yahoo.news import _extract_article_data
-from tradingagents.stock_discovery import fetch_index_universe
+from tradingagents.stock_discovery import fetch_index_universe, fetch_spy_holdings_universe
 
 INDICES = {'^GSPC': 'S&P 500', '^IXIC': 'Nasdaq Composite', '^DJI': 'Dow Jones', '^RUT': 'Russell 2000', '^VIX': 'VIX'}
 SECTORS = dict(zip(('XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLRE', 'XLK', 'XLU'),
@@ -96,7 +96,12 @@ class PublicMarketData:
             auto_adjust=False, actions=False, raise_errors=True, timeout=15))
 
     def universe(self):
-        return self._once(('universe',), lambda: fetch_index_universe('sp500'))
+        def fetch():
+            try:
+                return fetch_spy_holdings_universe()
+            except Exception:
+                return fetch_index_universe('sp500')
+        return self._once(('universe',), fetch)
 
     def news(self, symbol):
         return self._once(('news', symbol), lambda: [
