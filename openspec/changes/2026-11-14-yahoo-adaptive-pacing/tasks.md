@@ -6,4 +6,4 @@
 ## 2. 검증
 
 - [x] 2.1 간격 대기·429 확대·성공 회복 합성 테스트, 전체 pytest(1,843 passed), Ruff.
-- [ ] 2.2 빈 캐시 `discover --universe all` 재측정: 경과 시간, 단계별 시간, 429 재시도 수, 실패 수.
+- [x] 2.2 빈 캐시 `discover --universe all` 재측정: 경과 시간, 단계별 시간, 429 재시도 수, 실패 수(README 참고).
