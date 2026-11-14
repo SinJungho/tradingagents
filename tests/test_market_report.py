@@ -1090,3 +1090,26 @@ def test_breadth_note_lists_short_history_names_and_truncates_past_ten(monkeypat
                    if r['section'] == '시장 폭·참여도' and 'constituents' in (r['value'] or {}))
     assert '50일 N00, N01' in breadth['note'] and '외 2개' in breadth['note']
     assert 'N11' not in breadth['note']
+
+
+def test_mass_breadth_failures_are_counted_and_listed_briefly():
+    provider = FakePublicData()
+    tickers = tuple(f'F{i:02}' for i in range(15))
+    provider.universe = lambda: SimpleNamespace(tickers=tickers, source='https://example.com/members',
+                                                as_of='2026-11-01', as_of_label='membership as of')
+    daily, intraday = provider.daily, provider.intraday
+
+    def fail_members(original):
+        def fetch(symbol, day):
+            if symbol in tickers:
+                raise RuntimeError('synthetic rate limit')
+            return original(symbol, day)
+        return fetch
+
+    provider.daily, provider.intraday = fail_members(daily), fail_members(intraday)
+    report = mr.collect_report(provider, provider.now)
+    breadth = next(r for r in report['evidence'] if r['section'] == '시장 폭·참여도' and 'constituents' in (r['value'] or {}))
+    assert breadth['status'] == 'partial'
+    assert '시세 조회 실패 종목 15개: F00, F01' in breadth['reason'] and '외 5개' in breadth['reason']
+    assert 'F14' not in breadth['reason'] and 'F14' not in mr.render_markdown(report).split('## 핵심 요약')[0]
+    assert len(breadth['source_failures_by_symbol']) == 15  # the full list stays in evidence.json

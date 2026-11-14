@@ -305,15 +305,15 @@ def collect_report(provider=None, now=None):
         notes = [membership_note] if membership_note else []
         if any(short_history_excluded.values()):
             notes.append('이력 부족 종목은 해당 구간 분모에서 제외: ' + ' · '.join(
-                f"{period}일 {', '.join(names[:10])}" + (f' 외 {len(names) - 10}개' if len(names) > 10 else '')
+                f"{period}일 {short_list(names)}"
                 for period, names in short_history_excluded.items() if names))
         limitations = []
         if unavailable_symbols:
-            limitations.append(f'시세 조회 실패 종목: {", ".join(unavailable_symbols)}')
+            limitations.append(f'시세 조회 실패 종목 {len(unavailable_symbols)}개: {short_list(unavailable_symbols)}')
         if proxy_symbols:
-            limitations.append(f'5분 봉 종가 대용치 사용: {", ".join(proxy_symbols)}')
+            limitations.append(f'5분 봉 종가 대용치 사용: {short_list(proxy_symbols)}')
         if split_blocked_symbols:
-            limitations.append(f'분할로 제외한 종목: {", ".join(split_blocked_symbols)}')
+            limitations.append(f'분할로 제외한 종목: {short_list(split_blocked_symbols)}')
         add('시장 폭·참여도', breadth_label, stats, universe.source,
             unit='비율 % / 종목 수', period=window['day'], membership_as_of=membership_as_of,
             status='partial' if unavailable_symbols or proxy_symbols or split_blocked_symbols else 'available',
@@ -664,6 +664,11 @@ def collect_report(provider=None, now=None):
     except Exception as exc:
         missing('다음 거래일', 'Fed 정책 일정', policy_source, error_reason(exc))
     return {'window': window, 'evidence': evidence, 'narrative': [], 'llm_status': 'not_requested'}
+
+
+def short_list(names, limit=10):
+    """Name the first few symbols and count the rest; full lists stay in evidence.json."""
+    return ', '.join(names[:limit]) + (f' 외 {len(names) - limit}개' if len(names) > limit else '')
 
 
 def bounded_bars(frame, start, end):
