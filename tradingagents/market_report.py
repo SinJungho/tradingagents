@@ -522,14 +522,19 @@ def collect_report(provider=None, now=None):
                 base_label = '정규장 종가 또는 마지막 완료 5분 봉 대용치'
                 baseline_id = baseline_row['id']
             change = finite((value / baseline - 1) * 100) if value is not None and baseline is not None and baseline > 0 else None
-            stale = cutoff - (post.index[-1] + pd.Timedelta(minutes=5)) > pd.Timedelta(minutes=30)
+            # CME equity futures stop for the weekend at 17:00 ET on Friday, so judge staleness there.
+            # ponytail: holiday-eve early halts are not modeled; use a CME calendar if they matter.
+            weekend_halt = symbol in FUTURES and day.weekday() == 4
+            reference = min(cutoff, pd.Timestamp(datetime.combine(day, time(17), ET))) if weekend_halt else cutoff
+            stale = reference - (post.index[-1] + pd.Timedelta(minutes=5)) > pd.Timedelta(minutes=30)
             add('장후', f'{symbol} {label}', {'regular_close': baseline, 'post_price': value, 'change_pct': change},
                 quote_url(symbol), unit='USD / 변화 %', period=window['day'],
                 observed_at=(post.index[-1] + pd.Timedelta(minutes=5)).isoformat(), baseline=base_label,
                 **({'baseline_id': baseline_id} if symbol not in FUTURES else {}),
                 status='stale' if stale else ('available' if change is not None else 'partial'),
                 reason='장후 마지막 관측이 기준보다 30분 이상 오래됨' if stale else (None if change is not None else '정규장 기준 가격 또는 장후 가격 부족'),
-                note='조회된 고정 표본; 전체 시장 장후 순위 또는 실적 반응으로 단정하지 않음')
+                note='조회된 고정 표본; 전체 시장 장후 순위 또는 실적 반응으로 단정하지 않음'
+                     + ('; 금요일 선물은 17:00 ET 주말 휴장 기준으로 판정' if weekend_halt else ''))
         except Exception as exc:
             missing('장후', symbol, quote_url(symbol), error_reason(exc))
 

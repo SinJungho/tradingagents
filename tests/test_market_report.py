@@ -1113,3 +1113,28 @@ def test_mass_breadth_failures_are_counted_and_listed_briefly():
     assert '시세 조회 실패 종목 15개: F00, F01' in breadth['reason'] and '외 5개' in breadth['reason']
     assert 'F14' not in breadth['reason'] and 'F14' not in mr.render_markdown(report).split('## 핵심 요약')[0]
     assert len(breadth['source_failures_by_symbol']) == 15  # the full list stays in evidence.json
+
+
+def test_friday_futures_are_judged_against_the_weekend_halt():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-14T09:00:00-05:00')  # Saturday: target Friday 11-13
+
+    def intraday(symbol, day):
+        hours = ('15:55', '16:00', '16:55') if symbol.endswith('=F') else ('15:55', '16:00', '19:55')
+        index = pd.DatetimeIndex([f'{day} {h}' for h in hours], tz=mr.ET)
+        return pd.DataFrame({'Close': [100., 101., 102.]}, index=index)
+
+    provider.intraday = intraday
+    report = mr.collect_report(provider, provider.now)
+    assert report['window']['day'] == '2026-11-13'
+    rows = {r['label']: r for r in report['evidence'] if r['section'] == '장후'}
+    es = rows['ES=F S&P 500 선물']
+    assert es['status'] == 'available' and '17:00 ET 주말 휴장' in es['note']
+    assert rows['AAPL 대형주 표본']['status'] == 'available'
+
+    provider.intraday = lambda symbol, day: pd.DataFrame(
+        {'Close': [100., 101., 102.]},
+        index=pd.DatetimeIndex([f'{day} {h}' for h in ('15:55', '16:00', '16:30')], tz=mr.ET))
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence'] if r['section'] == '장후'}
+    assert rows['ES=F S&P 500 선물']['status'] == 'available'  # observed 16:35, within 30 min of 17:00
+    assert rows['AAPL 대형주 표본']['status'] == 'stale'       # stocks keep the 20:00 reference
