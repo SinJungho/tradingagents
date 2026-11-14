@@ -301,3 +301,34 @@ def test_a_missing_time_zone_is_not_taken_for_an_answer(yahoo):
 
     with pytest.raises(VendorUnavailableError):
         market.get_YFin_data_online("AAPL", "2026-09-21", "2026-09-25")
+
+
+def test_yahoo_calls_share_a_spacing_that_widens_on_429_and_eases_on_success(monkeypatch):
+    monkeypatch.setattr(common, '_MIN_INTERVAL', 0.05)  # conftest unpaces tests; restore the real floor
+    monkeypatch.setattr(common, '_interval', 0.05)
+    clock = {'now': 100.0}
+    waits = []
+    monkeypatch.setattr(common.time, 'monotonic', lambda: clock['now'])
+    monkeypatch.setattr(common.time, 'sleep', lambda seconds: waits.append(seconds))
+
+    assert common.yf_retry(lambda: 'ok') == 'ok'
+    assert common.yf_retry(lambda: 'ok') == 'ok'  # same instant: waits one interval
+    assert waits == [pytest.approx(common._MIN_INTERVAL)]
+
+    calls = iter([YFRateLimitError(), YFRateLimitError(), 'ok'])
+
+    def flaky():
+        outcome = next(calls)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    assert common.yf_retry(flaky, base_delay=0) == 'ok'
+    widened = common._interval
+    assert widened > common._MIN_INTERVAL * 3  # doubled twice, eased once
+    for _ in range(200):
+        common._adjust_pace(rate_limited=False)
+    assert common._interval == common._MIN_INTERVAL
+    for _ in range(20):
+        common._adjust_pace(rate_limited=True)
+    assert common._interval == common._MAX_INTERVAL
