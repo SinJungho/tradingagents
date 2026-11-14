@@ -21,8 +21,9 @@ def _config_with_env(monkeypatch, **overrides):
 def test_no_env_uses_built_in_defaults(monkeypatch):
     config = _config_with_env(monkeypatch)
     assert config["llm_provider"] == "openai"
-    assert config["deep_think_llm"] == "gpt-6-sol"
+    assert config["deep_think_llm"] == "gpt-6.1-sol"
     assert config["quick_think_llm"] == "gpt-6-luna"
+    assert config["quick_openai_reasoning_effort"] == "xhigh"
     assert config["backend_url"] is None
     assert config["max_debate_rounds"] == 1
     assert config["checkpoint_enabled"] is False

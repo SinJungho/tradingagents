@@ -22,6 +22,8 @@ def initialize_config():
 
 def _merge(base: dict, config: dict) -> dict:
     """Merge ``config`` into ``base``: dict-valued keys one level deep, scalars replaced."""
+    if "polymarket_transport" in config:
+        default_config.validate_polymarket_transport(config["polymarket_transport"])
     for key, value in deepcopy(config).items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             base[key].update(value)

@@ -95,6 +95,14 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
     """Keyword arguments for ``create_llm_client`` from a TradingAgents config."""
     kwargs = {}
     provider = config.get("llm_provider", "").lower()
+    auth_mode = config.get("openai_auth", "api_key")
+    if auth_mode not in ("api_key", "chatgpt_plan"):
+        raise ValueError("openai_auth must be 'api_key' or 'chatgpt_plan'.")
+    if auth_mode == "chatgpt_plan" and provider != "openai":
+        raise ValueError("openai_auth='chatgpt_plan' requires llm_provider='openai'.")
+
+    if provider == "openai":
+        kwargs["openai_auth"] = auth_mode
 
     if provider == "google":
         thinking_level = config.get("google_thinking_level")
@@ -102,9 +110,10 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
             kwargs["thinking_level"] = thinking_level
 
     elif provider in REASONING_EFFORT_PROVIDERS:
-        reasoning_effort = config.get("openai_reasoning_effort")
-        if reasoning_effort:
-            kwargs["reasoning_effort"] = reasoning_effort
+        if not (provider == "openai" and auth_mode == "chatgpt_plan"):
+            reasoning_effort = config.get("openai_reasoning_effort")
+            if reasoning_effort:
+                kwargs["reasoning_effort"] = reasoning_effort
 
     elif provider == "anthropic":
         effort = config.get("anthropic_effort")
@@ -115,19 +124,20 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
     # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env
     # string ("0.2") works the same as a programmatic float.
     temperature = config.get("temperature")
-    if temperature is not None and temperature != "":
+    plan_auth = provider == "openai" and auth_mode == "chatgpt_plan"
+    if temperature is not None and temperature != "" and not plan_auth:
         kwargs["temperature"] = float(temperature)
 
     # SDK retry budget is cross-provider. Forward it only when explicitly set
     # so each provider keeps its own default (usually 2) otherwise (#1091).
     max_retries = config.get("llm_max_retries")
-    if max_retries is not None and max_retries != "":
+    if max_retries is not None and max_retries != "" and not plan_auth:
         kwargs["max_retries"] = _coerce_max_retries(max_retries)
 
     # Output-token cap is cross-provider, but Gemini names it
     # ``max_output_tokens``; forward under the right key when set (#1204).
     max_tokens = config.get("max_tokens")
-    if max_tokens is not None and max_tokens != "":
+    if max_tokens is not None and max_tokens != "" and not plan_auth:
         key = "max_output_tokens" if provider == "google" else "max_tokens"
         kwargs[key] = _coerce_max_tokens(max_tokens)
 
@@ -151,6 +161,11 @@ def create_tier_client(config: dict, tier: str, **extra) -> BaseLLMClient:
         base_url = config.get(f"{tier}_think_backend_url") or config.get("backend_url")
     else:
         base_url = config.get(f"{tier}_think_backend_url")
-    kwargs = build_llm_kwargs({**config, "llm_provider": provider})
+    tier_config = {**config, "llm_provider": provider}
+    if not tier_config.get("openai_reasoning_effort"):
+        tier_config["openai_reasoning_effort"] = tier_config.get(
+            f"{tier}_openai_reasoning_effort"
+        )
+    kwargs = build_llm_kwargs(tier_config)
     return create_llm_client(provider=provider, model=config[f"{tier}_think_llm"], base_url=base_url,
                              **kwargs, **extra)

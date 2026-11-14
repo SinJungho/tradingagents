@@ -436,6 +436,10 @@ def display_complete_report(final_state):
         console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
         console.print(Panel(Markdown(final_state["final_trade_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
 
+    if final_state.get("source_failures"):
+        console.print(Panel("[bold]VI. Data Source Failures[/bold]", border_style="yellow"))
+        console.print(Panel(Markdown(final_state["source_failures"]), title="Data Retrieval", border_style="blue", padding=(1, 2)))
+
 
 def update_research_team_status(status):
     """Update status for research team members (not Trader)."""

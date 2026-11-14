@@ -28,6 +28,7 @@ class Position(BaseModel):
     ticker: str = Field(description="Instrument symbol, e.g. AAPL")
     quantity: float = Field(description="Signed units held; negative is short")
     average_price: float | None = Field(default=None, description="Average entry price per unit")
+    currency: str | None = Field(default=None, description="Currency for this position's average price")
 
 
 class PortfolioContext(BaseModel):
@@ -54,7 +55,12 @@ class PortfolioContext(BaseModel):
         held = self.positions_in(symbol)
         lines = []
         for position in held:
-            price = f", average price {position.average_price:,.2f}" if position.average_price is not None else ""
+            price = (
+                f", average price {position.average_price:,.2f}"
+                f"{' ' + position.currency if position.currency else ''}"
+                if position.average_price is not None
+                else ""
+            )
             spelled = position.ticker.strip().upper()
             listed = f" (listed as {position.ticker})" if spelled != symbol else ""
             lines.append(f"- Current position in {symbol}: {position.quantity:,.4g} units{price}{listed}")
@@ -64,7 +70,15 @@ class PortfolioContext(BaseModel):
             lines.append(f"- Cash available: {self.cash:,.2f}{' ' + self.currency if self.currency else ''}")
         others = [p for p in self.positions if all(p is not h for h in held)]
         if others:
-            lines.append("- Other positions: " + ", ".join(f"{p.ticker.upper()} {p.quantity:,.4g}" for p in others))
+            lines.append(
+                "- Other positions: "
+                + ", ".join(
+                    f"{p.ticker.upper()} {p.quantity:,.4g} units"
+                    f"{', average price ' + format(p.average_price, ',.2f') if p.average_price is not None else ''}"
+                    f"{' ' + p.currency if p.currency else ''}"
+                    for p in others
+                )
+            )
         return "Portfolio at the analysis date:\n" + "\n".join(lines)
 
     def fingerprint(self) -> str:

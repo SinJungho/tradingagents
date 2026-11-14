@@ -96,6 +96,23 @@ class BuildInstrumentContextTests(unittest.TestCase):
         self.assertIn("Exchange: PNK", context)
         self.assertIn("Do not substitute a different company", context)
 
+    def test_current_fund_identity_gets_fund_specific_guidance(self):
+        from tradingagents.dataflows.date_window import get_current_date
+
+        context = build_instrument_context(
+            "SYNTH", "stock", {"company_name": "Synthetic Fund", "quote_type": "ETF"},
+            trade_date=get_current_date(),
+        )
+        self.assertIn("not an operating company", context)
+        self.assertIn("fund-specific overview", context)
+
+    def test_historical_fund_identity_does_not_use_today_quote_type(self):
+        context = build_instrument_context(
+            "SYNTH", "stock", {"company_name": "Synthetic Fund", "quote_type": "ETF"},
+            trade_date="2020-01-01",
+        )
+        self.assertNotIn("Yahoo identifies this instrument as a fund", context)
+
     def test_crypto_uses_name_label_and_keeps_hint(self):
         context = build_instrument_context(
             "BTC-USD", "crypto", {"company_name": "Bitcoin USD"}

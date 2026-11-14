@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import http.client
 import json
+import socket
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -45,6 +46,20 @@ class TestStockTwitsResilience:
             out = stocktwits.fetch_stocktwits_messages("NVDA")
         assert "unavailable" in out.lower()
         assert out.startswith("<stocktwits unavailable")
+
+    def test_transient_dns_failure_retries_once_and_logs_no_exception_text(self, monkeypatch, caplog):
+        monkeypatch.setattr("tradingagents.dataflows.net.time.sleep", lambda _delay: None)
+        with patch.object(
+            stocktwits,
+            "urlopen",
+            side_effect=[URLError(socket.gaierror("synthetic DNS detail")), _stream("hello")],
+        ) as request:
+            output = stocktwits.fetch_stocktwits_messages("NVDA")
+
+        assert request.call_count == 2
+        assert "hello" in output
+        assert "provider=StockTwits host=api.stocktwits.com category=dns attempt=1/3" in caplog.text
+        assert "synthetic DNS detail" not in caplog.text
 
 
 @pytest.mark.unit

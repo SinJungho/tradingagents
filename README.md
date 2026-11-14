@@ -136,6 +136,8 @@ Install the package and its dependencies (`uv pip install .` with uv):
 pip install .
 ```
 
+For Toss Securities read-only portfolio summaries and synthetic demos, see [the portfolio analysis guide](docs/portfolio-analysis.md).
+
 ### Docker
 
 Alternatively, run with Docker:
@@ -185,6 +187,25 @@ To run on your ChatGPT Plus or Pro plan instead of an API key, choose "Subscript
 
 For AWS Bedrock, install the extra with `pip install ".[bedrock]"`, set `llm_provider: "bedrock"`, configure AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and `AWS_DEFAULT_REGION`, and use a Bedrock model ID, e.g. `us.anthropic.claude-opus-5-5`.
 
+For the separate legacy `provider=openai`, `openai_auth=chatgpt_plan` path, the local open-source CLI can request ChatGPT plan usage through Sign in with ChatGPT instead of an OpenAI API key. Install the optional token-validation dependency, authorize the app in your browser, then opt in:
+
+```bash
+pip install ".[chatgpt-plan]"
+tradingagents auth connect
+tradingagents auth models
+```
+
+Put these settings in `.env`, replacing the model placeholders with IDs from `tradingagents auth models`:
+
+```dotenv
+TRADINGAGENTS_LLM_PROVIDER=openai
+TRADINGAGENTS_OPENAI_AUTH=chatgpt_plan
+TRADINGAGENTS_DEEP_THINK_LLM=<account-model-id>
+TRADINGAGENTS_QUICK_THINK_LLM=<account-model-id>
+```
+
+The default authentication mode remains `api_key`. ChatGPT plan mode does not read `OPENAI_API_KEY`, does not fall back to API-key billing, and uses streamed Responses API requests with storage disabled and no automatic retries. Eligible plan usage is shared across apps, and account usage credits may also apply; check ChatGPT Settings → Usage for current limits, credits, and app access. Account/workspace eligibility and available models can vary. Manage the local connection with `tradingagents auth status` and `tradingagents auth disconnect`.
+
 For local models, configure Ollama with `llm_provider: "ollama"`. The default endpoint is `http://localhost:11434/v1`; set `OLLAMA_BASE_URL` to point at a remote `ollama-serve`. Pull models with `ollama pull <name>`, and pick "Custom model ID" in the CLI for any model not listed by default.
 
 For any other OpenAI-compatible server (vLLM, LM Studio, llama.cpp, or a custom relay), use `llm_provider: "openai_compatible"` and set the endpoint via `backend_url` (or `TRADINGAGENTS_LLM_BACKEND_URL`), e.g. `http://localhost:8000/v1` for vLLM or `http://localhost:1234/v1` for LM Studio. The model is whatever your server serves. No key is needed for local servers; set `OPENAI_COMPATIBLE_API_KEY` when the endpoint requires one.
@@ -198,6 +219,10 @@ cp .env.example .env
 
 ### CLI Usage
 
+New Codex worker sessions run `tradingagents doctor` automatically at startup after the repository hook is trusted once in Codex (`/hooks`). If a network destination fails, the hook also provides the restricted policy JSON for the Orca execution host. For a manual export, run `tradingagents network-policy --format json`. The output lists DNS resolver access and TCP destinations for the selected quick/deep LLM endpoints and configured data-provider chains, plus the directly used sentiment APIs, configured Toss/TypeSafe services, and ChatGPT plan auth when selected, without printing full URLs or credentials. Tool-level provider overrides take precedence over category settings; `default` includes all providers available to that tool. Configure those destinations and ports in the Orca execution host's network policy, then run `tradingagents doctor` inside the same worker to check the applied route. The export does not change network permissions; loopback targets are marked `loopback` and should not be added to an internet allowlist. An `unresolved` entry needs an endpoint configured before its policy can be generated. AWS credential-chain services and redirect destinations can require extra entries, noted in the export limitations.
+
+To check API configuration from the current process, including an Orca worker, run `tradingagents doctor`. It shows environment-variable names and whether they are set, then sends unauthenticated HTTP `HEAD` requests to the selected LLM and data API hosts. It never prints credential values or reads account data. For `provider=chatgpt`, use `tradingagents login chatgpt`; only the legacy `openai_auth=chatgpt_plan` path uses `tradingagents auth connect`. Doctor checks the selected store locally without refreshing or validating tokens. Local workers should inherit the signed-in user's home (remove unnecessary home overrides), keeping their existing worktree and working directory. They reuse login across restarts and serialize refresh through the existing file lock. Separate remote hosts or containers require their own login. If a sandbox blocks the login callback, run login in a regular terminal on the same host as the same user. Configure credentials on the worker's own execution host; do not copy them into prompts or agent messages.
+
 Launch the interactive CLI:
 ```bash
 tradingagents          # installed command
@@ -207,11 +232,23 @@ You will see a screen where you can select your desired tickers, analysis date, 
 
 To run without questions, for a scheduled job or a script, answer the per-run steps with flags and the rest with `TRADINGAGENTS_*` variables:
 ```bash
-export TRADINGAGENTS_LLM_PROVIDER=openai TRADINGAGENTS_QUICK_THINK_LLM=gpt-6-luna TRADINGAGENTS_DEEP_THINK_LLM=gpt-6-sol
+export TRADINGAGENTS_LLM_PROVIDER=openai TRADINGAGENTS_QUICK_THINK_LLM=gpt-6-luna TRADINGAGENTS_DEEP_THINK_LLM=gpt-6.1-sol
 export TRADINGAGENTS_OUTPUT_LANGUAGE=English TRADINGAGENTS_MAX_DEBATE_ROUNDS=1 TRADINGAGENTS_MAX_RISK_ROUNDS=1
 tradingagents --ticker NVDA --date 2026-09-23 --analysts market,news,fundamentals --save --no-show
 ```
 Each flag skips only its own question. Run without a terminal, a missing answer stops the run before it starts and names the flag or variable to set.
+
+Deterministic discovery can screen supplied tickers or market sections without calling an LLM:
+
+```bash
+tradingagents discover --tickers NVDA,AAPL
+tradingagents discover --universe sp500,russell2000,smallcap
+tradingagents discover --universe all
+```
+
+`--universe all` includes the current U.S. exchange-listed common-stock universe, Nasdaq-100, S&P 500, Russell 1000/2000, S&P MidCap 400 and S&P SmallCap 600 sections, plus large-, mid-, small- and micro-cap bands. Cap bands use Yahoo Finance's current market-cap snapshot and project-defined thresholds: $10B+, $2B–$10B, $300M–$2B and below $300M. OTC securities are outside the listing universe. Nasdaq Trader files exclude ETFs, test issues and explicitly identified non-common securities; other listing types may still require review.
+
+Index membership sources appear in the output. The public S&P and Russell 1000 lists are secondary sources; Russell 2000 uses iShares IWM holdings as a proxy and can differ from official membership. The screen computes the existing value, growth, quality and momentum signals once per unique ticker, shows up to 10 Bullish names per factor and section in factor-score order, and creates no cross-factor rank or investment recommendation. A first whole-market run can take a long time because it retrieves price history and SEC facts for each symbol. Select up to 10 candidates and run the regular `tradingagents --ticker <T> --date <YYYY-MM-DD>` workflow separately for deeper analysis.
 
 At start-up the interactive CLI mentions a newer release and notices from Tauric Research. It checks at most once a day, in the background, and sends nothing about your runs; set `TRADINGAGENTS_NO_UPDATE_CHECK=1` to turn it off. Runs without a terminal never check.
 
@@ -273,8 +310,8 @@ from tradingagents.default_config import DEFAULT_CONFIG
 
 config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "openai"        # e.g. openai, google, anthropic, deepseek, groq, ollama; openai_compatible covers any OpenAI-compatible endpoint (vLLM, LM Studio, llama.cpp, ...)
-config["deep_think_llm"] = "gpt-6-sol"    # Model for complex reasoning
-config["quick_think_llm"] = "gpt-6-luna"   # Model for quick tasks
+config["deep_think_llm"] = "gpt-6.1-sol"  # Model for complex reasoning
+config["quick_think_llm"] = "gpt-6-luna"  # Model for quick tasks
 config["max_debate_rounds"] = 2
 
 ta = TradingAgentsGraph(debug=True, config=config)
@@ -378,6 +415,16 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. A decision is entered at the first close after its date, because a run reads news published after that day's close. Your own memory log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
 
+### Style scores without a model
+
+`tradingagents.style_scores` computes value (earnings yield), growth (fiscal-year revenue growth), quality (return on equity) and momentum (12-1 month return) signals by arithmetic alone: SEC EDGAR figures as filed by the date, prices cut at the date, and the price restated in filing-day shares across later splits. A style whose inputs are missing reports `Abstain`, never `Neutral`. `style-backtest` checks whether those signals predicted alpha, each over its own horizon (252 trading days for value, growth and quality; 63 for momentum), without calling a model:
+
+```bash
+tradingagents style-backtest NVDA,AAPL,MSFT --start 2022-12-01 --end 2026-08-01 --every 30
+```
+
+A first run over 40 US large caps found no signal ordered Bullish > Neutral > Bearish (see `openspec/changes/archive/2026-11-11-style-factor-scores/README.md`). Tickers chosen today miss the names that later failed, monthly cells with year-long windows overlap, and thresholds are fixed rather than sector-relative, so treat the output as indicative.
+
 ## Reproducibility
 
 TradingAgents is LLM-driven, so two runs of the same ticker and date can differ. This is expected for a research tool built on language models, not a defect. The variation comes from a few distinct sources, and it helps to separate them.
@@ -419,3 +466,49 @@ Please reference our work if you find *TradingAgents* provides you with some hel
       url={https://arxiv.org/abs/2412.20138}, 
 }
 ```
+
+### Polymarket 별칭 연결
+
+공개 검색은 기본적으로 `cloudfront_alias` 연결을 사용합니다. 연결 방식은 네트워크별
+자동 분기 없이 실행 환경의 `TRADINGAGENTS_POLYMARKET_TRANSPORT` 값으로 선택하며,
+공식 경로가 필요한 경우에만 `direct`를 명시합니다.
+
+```bash
+# 공식 direct 경로가 필요한 경우에만 설정
+export TRADINGAGENTS_POLYMARKET_TRANSPORT=direct
+```
+
+Python 설정에서도 `polymarket_transport`를 지정할 수 있습니다. 허용값은 위 두
+가지뿐이며, 잘못된 값은 설정 오류입니다. 이 설정은 공급자 선택과 독립적입니다.
+기본 예측시장 공급자는 Polymarket입니다. Kalshi를 사용하려면 기존 설정의
+`data_vendors.prediction_markets = "kalshi"`를 지정하면 됩니다.
+
+별칭은 시스템 DNS resolver가 반환한 공식 호스트의 canonical name에서 매번
+확인하며, 유효한 `*.cloudfront.net` 이름만 허용합니다. 별도 서버나 로컬 프록시,
+Wi-Fi별 인증서 설치는 필요 없습니다. HTTPS URL과 TLS SNI는 별칭을 사용하고
+HTTP Host는 공식 Gamma API를 유지합니다. **인증서는 별칭에 대해 검증**하므로
+공식 Polymarket 호스트 인증서를 검증하는 것과 보장 범위가 다릅니다. CDN·DNS
+변경이나 네트워크 정책 변경으로 실패할 수 있으며 공식 경로로 자동 전환하지
+않습니다. 두 모드 모두 인증서 검증을 켜고 리다이렉트를 거부하며, 요청 timeout은
+30초, HTTP 시도는 최대 3회입니다.
+
+doctor는 공식 경로와 선택된 별칭의 HEAD 도달성을 따로 표시합니다. HEAD 응답은
+검색 GET 성공을 뜻하지 않으며, 별칭 성공이 공식 연결 복구를 뜻하지 않습니다.
+네트워크 정책 출력에는 동적으로 확인한 별칭 목적지 또는 해결 실패가 반영됩니다.
+
+### 미국 시장 마감·장후 보고서
+
+```bash
+tradingagents market-report
+tradingagents market-report --no-llm --output-dir results/market-reports
+```
+
+동부시간 20시 이후에는 당일, 그 이전·휴장일에는 직전 완료 거래일을 선택합니다. 거래소 캘린더로 휴장·조기 폐장·서머타임을 처리합니다. 기본 명령은 기존 deep 모델로 한국어 해석을 작성하며, `--no-llm`은 모델을 호출하지 않습니다. 예약 실행과 계좌 조회는 없습니다.
+
+각 실행을 새 폴더에 `report.md`, `report.html`, `evidence.json`으로 저장합니다. 지수·11개 업종 ETF·S&P 500 구성 표본의 시장 폭·매크로·기업 뉴스·장후·다음 거래일 일정을 포함합니다. 출처와 시각을 붙이고 자료가 부족하면 첫 화면에 **불완전 보고서**와 누락 범위를 표시합니다. HTML에는 표·목차·출처 링크가 있으며 외부 스크립트를 실행하지 않습니다.
+
+Yahoo의 무료 공개 자료와 무료 키가 필요한 FRED를 사용합니다. 정규장 종가는 비수정, 기간 수익률과 시장 폭은 수정 종가이며 빠진 거래일을 보간하지 않습니다. FRED는 전일까지의 빈티지를 사용하고 관측 기간·빈도·단위와 미확인 발표 시각을 구분합니다. 다음 거래일 일정은 조회 당시 정보로, 과거 시점의 공지 여부를 보장하지 않습니다.
+
+장후는 ES/NQ/YM/RTY 선물과 AAPL·MSFT·NVDA·AMZN·GOOGL·META·TSLA 표본의 20시 이전 완료된 5분 봉입니다. 전체 시장 장후 순위가 아니며 선물 기준 가격은 주식시장 폐장 시각 직전 가격으로 결제가격과 다릅니다. 실적 발표값·가이던스·정책 일정의 공개 시각을 검증하지 못하면 확인 불가로 남깁니다. LLM 실패나 근거 검사 탈락 시에도 수치·출처 보고서를 저장합니다. 검사는 사실성 보증이 아닙니다.
+
+발굴 출력에는 출처 URL·조회 시각·구성 기준일·출처 종류와 단계별 소요 시간·호출 수가 포함됩니다. 동일 실행에서 공급자 심볼 별칭의 가격·SEC·분할 결과와 실패를 재사용하며 SEC 공통 티커 표는 한 번만 읽습니다. 기존 디스크 캐시 만료 정책은 유지합니다.

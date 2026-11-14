@@ -5,9 +5,11 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage
 
 from tradingagents.agents.context import (
+    get_evidence_instruction,
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
+    get_position_instruction,
 )
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
@@ -48,7 +50,11 @@ def create_trader(llm):
                 "role": "system",
                 "content": (
                     "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
+                    "Based on your analysis, provide a specific recommendation to Buy, Hold, or Sell. "
+                    "Map the action to the supplied position: for a long, Buy adds, Hold maintains, "
+                    "and Sell reduces or exits; with no position, Buy opens, Sell avoids entry, "
+                    "and Hold waits; for a short, Buy covers/reduces, Hold maintains, and Sell "
+                    "maintains or increases the short. "
                     + grounding
                     # Entry/stop are numeric price fields. Asking for concrete
                     # levels invites a percentage ("15%"), which is not a price
@@ -58,6 +64,8 @@ def create_trader(llm):
                     "or a range; convert a percentage distance to the price level it "
                     "implies, or omit the field if you cannot state a number. "
                     + NO_EXTERNAL_TOOLS
+                    + get_evidence_instruction()
+                    + get_position_instruction()
                     + get_language_instruction()
                 ),
             },

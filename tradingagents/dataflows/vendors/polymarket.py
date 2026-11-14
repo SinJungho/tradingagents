@@ -12,11 +12,27 @@ outcomes (a "Yes" at 0.76 means the market prices a 76% chance).
 import json
 import logging
 import math
+import re
+import socket
 from datetime import UTC, datetime
 
 import requests
 
+from tradingagents.api_diagnostics import (
+    APIFailure,
+    EndpointProbe,
+    _NoNetrcAuth,
+    classify_api_failure,
+)
+from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.date_window import is_historical
+from tradingagents.dataflows.errors import (
+    record_source_failure,
+    source_circuit_error,
+    trip_source_circuit,
+)
+from tradingagents.dataflows.net import get_with_retry
+from tradingagents.default_config import validate_polymarket_transport
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +45,66 @@ REQUEST_TIMEOUT = 30
 DEFAULT_LIMIT = 6
 
 
-def _request(path: str, params: dict) -> dict:
-    response = requests.get(
-        f"{GAMMA_BASE}/{path}", params=params, timeout=REQUEST_TIMEOUT
+def _unavailable_message(topic: str) -> str:
+    return (
+        f"Polymarket data is unavailable for '{topic}'. Do not write, invent, or "
+        "estimate prediction-market odds or numbers; explicitly state that this "
+        "source is unavailable."
     )
-    response.raise_for_status()
-    return response.json()
+
+
+def transport_target(config=None):
+    config = get_config() if config is None else config
+    mode = validate_polymarket_transport(config.get("polymarket_transport", "cloudfront_alias"))
+    if mode == "direct":
+        return GAMMA_BASE, {}
+    try:
+        records = socket.getaddrinfo(
+            "gamma-api.polymarket.com", 443, flags=socket.AI_CANONNAME,
+        )
+    except OSError:
+        raise requests.ConnectionError("Polymarket alias DNS resolution failed") from None
+    names = {record[3].rstrip(".").lower() for record in records if record[3]}
+    aliases = {
+        name for name in names
+        if re.fullmatch(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+cloudfront\.net", name)
+        and len(name) <= 253
+    }
+    if len(aliases) != 1:
+        raise requests.ConnectionError("Polymarket CloudFront alias unavailable")
+    return f"https://{aliases.pop()}", {"Host": "gamma-api.polymarket.com"}
+
+
+def probe_transport(config):
+    """HEAD reachability only; this does not validate search GET."""
+    base, headers = transport_target(config)
+    with requests.Session() as session:
+        session.auth = _NoNetrcAuth()
+        try:
+            session.head(base, headers=headers, timeout=3, verify=True, allow_redirects=False)
+            return EndpointProbe(True)
+        except requests.RequestException as error:
+            return EndpointProbe(False, classify_api_failure(error))
+
+
+def _request(path: str, params: dict) -> dict:
+    base, headers = transport_target()
+    mode = get_config().get("polymarket_transport", "cloudfront_alias")
+    response = get_with_retry(
+        f"{base}/{path}",
+        params=params,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+        provider=f"Polymarket/{mode}",
+        request_options={"verify": True, "allow_redirects": False, "auth": _NoNetrcAuth()},
+        reject_redirects=True,
+    )
+    data = response.json()
+    if not isinstance(data, dict) or not isinstance(data.get("events"), list):
+        error = requests.RequestException("Invalid Polymarket search structure")
+        error.failure = APIFailure("provider_response", False)
+        raise error
+    return data
 
 
 def _parse_json_list(value) -> list:
@@ -108,14 +178,24 @@ def get_prediction_markets(topic: str, limit: int | None = None, as_of_date: str
     if limit is None:
         limit = DEFAULT_LIMIT
 
+    circuit_error = source_circuit_error("get_prediction_markets")
+    if circuit_error is not None:
+        record_source_failure("get_prediction_markets", circuit_error)
+        return _unavailable_message(topic)
+
     try:
         data = _request("public-search", {"q": topic, "limit_per_type": 20})
     except requests.RequestException as e:
-        logger.warning("Polymarket search failed for %r: %s", topic, e)
-        return (
-            f"Polymarket data is currently unavailable (network error: {e}). "
-            f"Proceed without prediction-market signal for '{topic}'."
+        logger.warning(
+            "API fetch failed provider=Polymarket mode=%s category=%s status=%s",
+            get_config().get("polymarket_transport", "cloudfront_alias"),
+            classify_api_failure(e).category,
+            getattr(e, "status_code", None),
         )
+        record_source_failure("get_prediction_markets", e)
+        if isinstance(e, (requests.ConnectionError, requests.Timeout)):
+            trip_source_circuit("get_prediction_markets", e)
+        return _unavailable_message(topic)
 
     now = datetime.now(UTC)
     candidates = [

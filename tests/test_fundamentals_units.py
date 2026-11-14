@@ -77,3 +77,46 @@ def test_income_figures_without_a_stated_reporting_currency_are_printed_bare():
     out = _fundamentals({"longName": "X", "currency": "USD", "marketCap": 1000, "totalRevenue": 50})
 
     assert "Market Cap: 1000 USD" in out and "Revenue (TTM): 50\n" in out + "\n"
+
+
+@pytest.mark.unit
+def test_etf_fundamentals_use_fund_profile_and_holdings_instead_of_company_metrics(monkeypatch):
+    class HoldingsTable:
+        empty = False
+
+        def head(self, _count):
+            return self
+
+        def to_csv(self):
+            return "symbol,weight\nSYNTH,0.25\n"
+
+    class FundsData:
+        fund_overview = {"investment_style": "index"}
+        fund_operations = {"expense_ratio": "provider-reported"}
+        asset_classes = {"equity": 1.0}
+        top_holdings = HoldingsTable()
+        sector_weightings = {"technology": 0.5}
+
+    class FakeTicker:
+        info = {
+            "quoteType": "ETF",
+            "category": "leveraged_equity",
+            "currency": "USD",
+            "totalAssets": 123456,
+            "navPrice": 42.5,
+            "annualReportExpenseRatio": 0.0095,
+        }
+        funds_data = FundsData()
+
+    monkeypatch.setattr(fundamentals.yf, "Ticker", lambda _ticker: FakeTicker())
+    monkeypatch.setattr(fundamentals, "yf_retry", lambda callback: callback())
+    monkeypatch.setattr(date_window, "get_current_date", lambda: TODAY)
+
+    out = fundamentals.get_fundamentals("SYNTH", TODAY)
+
+    assert "# Fund data for SYNTH" in out
+    assert "Net assets: 123456 USD" in out
+    assert "NAV price: 42.5 USD" in out
+    assert "Fund operations" in out and "expense_ratio" in out
+    assert "SYNTH,0.25" in out
+    assert "PE Ratio" not in out and "Revenue (TTM)" not in out

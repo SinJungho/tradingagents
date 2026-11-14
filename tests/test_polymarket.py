@@ -14,6 +14,7 @@ import tradingagents.dataflows.config as config_module
 import tradingagents.default_config as default_config
 from tradingagents.dataflows import router
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.errors import drain_source_failures
 from tradingagents.dataflows.vendors import polymarket
 
 
@@ -114,6 +115,35 @@ class PolymarketResilienceTests(unittest.TestCase):
             out = polymarket.get_prediction_markets("Fed rate cut")
         self.assertIn("unavailable", out.lower())
         self.assertIn("Fed rate cut", out)
+
+    def test_connection_failure_blocks_later_topics_until_failures_are_drained(self):
+        drain_source_failures()
+        try:
+            with mock.patch.object(
+                polymarket,
+                "_request",
+                side_effect=[requests.ConnectionError("synthetic DNS failure"), {"events": []}],
+            ) as request:
+                first = polymarket.get_prediction_markets("Fed rate cut")
+                second = polymarket.get_prediction_markets("recession 2026")
+
+                self.assertEqual(request.call_count, 1)
+                self.assertIn("unavailable", first.lower())
+                self.assertIn("Do not write, invent, or estimate", second)
+                self.assertIn("prediction-market odds or numbers", second)
+                self.assertIn("source is unavailable", second)
+
+                failures = drain_source_failures()
+                self.assertEqual(
+                    [method for method, _ in failures],
+                    ["get_prediction_markets", "get_prediction_markets"],
+                )
+
+                third = polymarket.get_prediction_markets("recession 2026")
+                self.assertIn("No open prediction markets", third)
+                self.assertEqual(request.call_count, 2)
+        finally:
+            drain_source_failures()
 
 
 @pytest.mark.unit

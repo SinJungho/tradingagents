@@ -425,3 +425,106 @@ def test_a_network_failure_while_signing_in_is_reported_not_raised_raw(home, ope
     with pytest.raises(auth.ChatGPTUnreachable, match="sign you in to ChatGPT.*try again"):
         auth.sign_in(say=printed.append, read_line=_paster(printed), timeout=10, port=0)
     assert not auth.AUTH_FILE.exists()
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 503])
+@pytest.mark.parametrize("body", [
+    {"error": {"message": "synthetic-token-account-raw"}},
+    {"error": "synthetic-token-account-raw"},
+    ["synthetic-token-account-raw"],
+])
+def test_oauth_failures_hide_untrusted_response_and_do_not_retry(home, openai, status, body):
+    _signed_in(expires_at=time.time() - 60)
+    before = auth.AUTH_FILE.read_bytes()
+    openai.status, openai.token_body = status, body
+    with pytest.raises(auth.ChatGPTAuthError) as caught:
+        auth.access_token()
+    assert "synthetic-token-account-raw" not in str(caught.value)
+    assert len(openai.posts) == 1
+    assert auth.AUTH_FILE.read_bytes() == before
+    if status < 429:
+        assert "tradingagents login chatgpt" in str(caught.value)
+    else:
+        assert isinstance(caught.value, auth.ChatGPTUnreachable)
+
+
+def test_process_workers_reuse_login_and_serialize_refresh(tmp_path):
+    import subprocess
+    import sys
+
+    worker_home = tmp_path / "worker-home"
+    store = worker_home / ".tradingagents" / "chatgpt-auth.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({
+        "account": {"client_id": "synthetic-client"},
+        "tokens": {"access_token": "synthetic-old", "refresh_token": "synthetic-refresh",
+                   "expires_at": 0},
+    }))
+    script = '''
+import sys, time
+from pathlib import Path
+from tradingagents.llm_clients import chatgpt_auth as auth
+
+def no_network(*args, **kwargs):
+    raise AssertionError("live network forbidden")
+auth.requests.sessions.Session.request = no_network
+auth._signing_keys = lambda: []
+def post(url, timeout, data):
+    assert data["refresh_token"] == "synthetic-refresh"
+    with (auth.AUTH_FILE.parent / "refresh-count").open("a") as f:
+        f.write("refresh\\n")
+    time.sleep(0.1)
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"access_token": "synthetic-new", "refresh_token": "synthetic-rotated",
+                    "expires_in": 3600}
+    return Response()
+auth.requests.post = post
+ready = Path(sys.argv[1])
+ready.touch()
+while not Path(sys.argv[2]).exists():
+    time.sleep(0.01)
+try:
+    assert auth.credential()() == "synthetic-new"
+except auth.ChatGPTAuthError as exc:
+    assert "tradingagents login chatgpt" in str(exc)
+    print("login required")
+else:
+    print("reused")
+'''
+    # HOME is changed only inside synthetic subprocess environments, never the host.
+    env = {"PATH": os.environ.get("PATH", ""), "HOME": str(worker_home),
+           "USERPROFILE": str(worker_home)}
+    gate = tmp_path / "start"
+    ready = [tmp_path / f"ready-{i}" for i in range(4)]
+    workers = [subprocess.Popen(
+        [sys.executable, "-c", script, str(marker), str(gate)], env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) for marker in ready]
+    try:
+        deadline = time.monotonic() + 20
+        while not all(marker.exists() for marker in ready) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert all(marker.exists() for marker in ready)
+        gate.touch()
+        for worker in workers:
+            out, err = worker.communicate(timeout=20)
+            assert worker.returncode == 0, err
+            assert out.strip() == "reused"
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+            worker.wait()
+    for _ in range(2):
+        result = subprocess.run([sys.executable, "-c", script, str(ready[0]), str(gate)],
+                                env=env, capture_output=True, text=True, timeout=20)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "reused"
+    assert (store.parent / "refresh-count").read_text().splitlines() == ["refresh"]
+    env.update(HOME=str(tmp_path / "separate-home"), USERPROFILE=str(tmp_path / "separate-home"))
+    result = subprocess.run([sys.executable, "-c", script, str(ready[0]), str(gate)],
+                            env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "login required"

@@ -11,8 +11,9 @@ Two pieces verified:
    https://api-docs.deepseek.com/guides/tool_calls.
 """
 
-import os
+import json
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompt_values import ChatPromptValue
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 from tradingagents.llm_clients.openai_client import (
     DeepSeekChatOpenAI,
     NormalizedChatOpenAI,
+    NvidiaChatOpenAI,
     _input_to_messages,
 )
 
@@ -55,7 +57,6 @@ class TestInputToMessages:
 @pytest.mark.unit
 class TestDeepSeekReasoningContent:
     def _client(self):
-        os.environ.setdefault("DEEPSEEK_API_KEY", "placeholder")
         return DeepSeekChatOpenAI(
             model="deepseek-v4-flash",
             api_key="placeholder",
@@ -162,6 +163,47 @@ class TestStructuredOutputCapabilityDispatch:
         assert _bound_kwargs(bound).get("tool_choice") is None or \
             "tool_choice" not in _bound_kwargs(bound)
 
+    def test_nvidia_namespaced_v4_1_flash_suppresses_tool_choice(self):
+        client = NvidiaChatOpenAI(
+            model="deepseek-ai/deepseek-v4.1-flash",
+            api_key="placeholder",
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        bound = client.with_structured_output(self._Sample)
+        assert _bound_kwargs(bound).get("tool_choice") is None or \
+            "tool_choice" not in _bound_kwargs(bound)
+
+    def test_nvidia_namespaced_v4_1_flash_replays_reasoning_content(self):
+        client = NvidiaChatOpenAI(
+            model="deepseek-ai/deepseek-v4.1-flash",
+            api_key="placeholder",
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+        result = client._create_chat_result(
+            {
+                "model": "deepseek-ai/deepseek-v4.1-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning_content": "synthetic hidden reasoning",
+                            "tool_calls": [],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+            }
+        )
+        prior = result.generations[0].message
+        assert prior.additional_kwargs["reasoning_content"] == "synthetic hidden reasoning"
+
+        payload = client._get_request_payload([prior, HumanMessage(content="Continue.")])
+        assistant = next(m for m in payload["messages"] if m.get("role") == "assistant")
+        assert assistant["reasoning_content"] == "synthetic hidden reasoning"
+
     def test_future_v_variant_via_regex(self):
         """Forward-compat: unknown deepseek-v\\d-* IDs inherit V4 quirks."""
         bound = self._client("deepseek-v5-hypothetical").with_structured_output(self._Sample)
@@ -180,46 +222,79 @@ class TestStructuredOutputCapabilityDispatch:
 
 
 # ---------------------------------------------------------------------------
-# Live API: structured output round-trips against the real DeepSeek backend
+# Mocked API: structured output round-trips through the DeepSeek client
 # ---------------------------------------------------------------------------
 
 
-def _has_real_deepseek_key():
-    key = os.environ.get("DEEPSEEK_API_KEY", "")
-    return bool(key) and key != "placeholder"
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not _has_real_deepseek_key(),
-    reason="DEEPSEEK_API_KEY not set (or placeholder); skipping live API call",
-)
-class TestDeepSeekLiveStructuredOutput:
-    """End-to-end: a real DeepSeek V4-flash call returns a typed instance.
-
-    Verifies the no-tool_choice path doesn't trigger the 400 reported in
-    issue #678 and that the structured-output binding still parses to a
-    Pydantic instance.
-    """
+@pytest.mark.unit
+class TestDeepSeekMockStructuredOutput:
+    """Verify the DeepSeek structured-output wire contract without a live call."""
 
     class _Pick(BaseModel):
         action: str
         confidence: float
 
     def test_v4_flash_returns_structured_output(self):
-        client = DeepSeekChatOpenAI(
-            model="deepseek-v4-flash",
-            api_key=os.environ["DEEPSEEK_API_KEY"],
-            base_url="https://api.deepseek.com",
-            timeout=60,
-        )
-        bound = client.with_structured_output(self._Pick)
-        result = bound.invoke(
-            "Pick BUY or SELL or HOLD for a tech stock with strong earnings. "
-            "Confidence is a float between 0 and 1."
-        )
+        requests = []
+
+        def handle_request(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            tool_name = payload["tools"][0]["function"]["name"]
+            return httpx.Response(
+                200,
+                json={
+                    "id": "chatcmpl-synthetic",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "deepseek-v4-flash",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-synthetic",
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": json.dumps(
+                                                {"action": "HOLD", "confidence": 0.75}
+                                            ),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 6,
+                        "total_tokens": 18,
+                    },
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handle_request)) as http_client:
+            client = DeepSeekChatOpenAI(
+                model="deepseek-v4-flash",
+                api_key="synthetic-test-key",
+                base_url="https://api.deepseek.com",
+                http_client=http_client,
+            )
+            bound = client.with_structured_output(self._Pick)
+            result = bound.invoke(
+                "Synthetic case only: choose BUY, SELL, or HOLD for FICTIONAL-ASSET-001."
+            )
+
+        assert len(requests) == 1
+        assert requests[0]["model"] == "deepseek-v4-flash"
+        assert "tool_choice" not in requests[0]
         assert isinstance(result, self._Pick)
-        assert result.action in {"BUY", "SELL", "HOLD"}
+        assert result.action == "HOLD"
         assert 0.0 <= result.confidence <= 1.0
 
 

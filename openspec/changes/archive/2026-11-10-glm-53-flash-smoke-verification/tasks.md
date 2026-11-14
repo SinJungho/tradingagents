@@ -1,0 +1,29 @@
+# Tasks
+
+- [x] 1. 금융 에이전트용 공개 벤치마크와 NVIDIA Build 모델 접근 상태 조사
+  - [x] 1.1 Vals Finance Agent v2.1의 공통 harness 결과 확인: DeepSeek V4.1 Flash 65.43%, GLM-5.3-Flash 60.59%
+  - [x] 1.2 요청량·시간 트레이드오프를 고려해 DeepSeek를 심층 역할, GLM Flash를 빠른 역할로 제안
+  - [x] 1.3 계정 rate limit 표시 `Up to 40 rpm` 확인; 모델별·동시 사용자별 변동 가능성과 일일/토큰 잔여량 미표시 기록
+- [x] 2. 기존 smoke를 NVIDIA provider와 역할별 모델 ID에 맞게 갱신
+  - [x] 2.1 키는 현재 프로세스의 `NVIDIA_API_KEY`만 확인하고 `.env` 및 `.env.bak`은 읽지 않는다
+  - [x] 2.2 심층 모델 `deepseek-ai/deepseek-v4.1-flash`, 빠른 모델 `z-ai/glm-5.3-flash`를 검증한다
+  - [x] 2.3 실제 호출은 `--confirm-no-charge`와 합성 입력, 출력 상한 256, 최대 1회, 재시도 0으로 제한한다
+  - [x] 2.4 NVIDIA 이름공간 접두사를 제거해 모델별 capability를 찾고, DeepSeek reasoning 내용 round-trip을 보존한다
+  - [x] 2.5 로컬 상한을 한 번 실행당 1회, 실행 사이 60초, 출력 256 토큰으로 강제하고 계정 quota와 구분해 안내한다
+  - [x] 2.6 NVIDIA smoke HTTP timeout을 300초로 설정한다. `40 rpm`은 응답 시간 보장이 아님을 문서화한다
+- [x] 3. HTTP mock 기반 포커스 테스트 추가 또는 갱신
+  - [x] 3.1 provider, 모델 ID, 요청 횟수, 출력 상한, 구조화 출력/도구 호출 계약과 응답 파싱 검증
+  - [x] 3.2 NVIDIA 이름공간 모델 ID가 GLM/DeepSeek capability 및 요청 형식에 각각 연결되는지 검증
+  - [x] 3.3 reasoning 응답 내용이 다음 도구 요청에 실리는지 mock으로 검증
+  - [x] 3.4 키 없음, HTTP 오류, 파싱 오류에서 요청 재시도 및 민감정보 노출이 없는지 검증
+  - [x] 3.5 60초 로컬 cooldown과 출력 최대치가 강제되는지 mock으로 검증
+  - [x] 3.6 mock 요청에서 300초 timeout 설정을 검증
+- [x] 4. 저장소 검증 실행
+  - [x] 4.1 포커스 테스트와 `./.venv/bin/python -m pytest -q`
+  - [x] 4.2 `./.venv/bin/ruff check .`
+  - [x] 4.3 `./.venv/bin/tradingagents --help` 또는 동등한 CLI smoke
+- [x] 5. 선택적 NVIDIA 실제 요청
+  - [x] 5.1 DeepSeek 심층 경로를 합성 입력으로 실행당 한 번 호출: 별도 실행 2회, 각각 30초와 300초 `ReadTimeout`; 재시도·폴백 없음
+  - [x] 5.2 계정 한도가 불명확하거나 유료 전환 가능성이 있으면 호출하지 않고 미실행으로 보고
+  - [x] 5.3 모델 ID와 결과 기록: 응답이 없어 토큰 사용량과 측정된 응답 지연은 제공되지 않음
+- [x] 6. OpenSpec 검증 후 필수 작업이 모두 완료된 경우에만 변경을 아카이브

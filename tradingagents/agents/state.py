@@ -1,3 +1,4 @@
+from operator import add
 from typing import Annotated
 
 from langgraph.graph import MessagesState
@@ -71,3 +72,6 @@ class AgentState(MessagesState):
     past_context: Annotated[str, "Memory log context for the Portfolio Manager (same-ticker decisions + cross-ticker lessons), written by the Memory Log step"]
     memory_note: Annotated[str, "What the Memory Log step could not settle or read this run, for the report; empty when all went well"]
     portfolio_context: Annotated[str, "Caller-supplied holdings and cash, rendered at run start; empty when not provided"]
+    portfolio_context_provided: Annotated[bool, "Whether caller-supplied holdings are known, including an explicitly flat position"]
+    portfolio_positions: Annotated[list[dict], "Ticker and signed quantity only, for deterministic report review"]
+    tool_evidence_numbers: Annotated[list[str], add]

@@ -1,3 +1,4 @@
+import json
 import sys
 from enum import StrEnum
 from typing import Annotated
@@ -5,14 +6,19 @@ from typing import Annotated
 import typer
 from rich.markup import escape
 
+from cli.chatgpt_auth import auth_app
 from cli.display import console
 from cli.models import AnalystType, AssetType
+from cli.portfolio import portfolio_app
 from cli.prompts import filter_analysts_for_asset_type, parse_analysts
 from cli.run import run_analysis
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
+from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
+from tradingagents.stock_discovery import discover_market, discover_nasdaq100, discover_stocks
+from tradingagents.style_scores import evaluate_styles
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
 # the platform at import time), so gate on the platform rather than catching the
@@ -31,6 +37,60 @@ app = typer.Typer(
     help="TradingAgents CLI: Multi-Agents LLM Financial Trading Framework",
     add_completion=True,  # Enable shell completion
 )
+app.add_typer(portfolio_app, name="portfolio")
+app.add_typer(auth_app, name="auth")
+
+
+@app.command("market-report")
+def market_report(
+    output_dir: str = typer.Option("results/market-reports", "--output-dir", help="보고서 저장 디렉터리"),
+    llm: bool = typer.Option(True, "--llm/--no-llm", help="기존 deep 모델로 근거 기반 해석 작성"),
+) -> None:
+    """미국 동부시간 20시까지 완료된 시장의 한국어 Markdown·HTML·근거 JSON 보고서."""
+    from tradingagents.market_report import (
+        collect_report,
+        quality_warnings,
+        save_report,
+        write_narrative,
+    )
+
+    report = collect_report()
+    if llm:
+        write_narrative(report)
+    path = save_report(report, output_dir)
+    typer.echo(f"보고 대상 거래일: {report['window']['day']} / 기준: {report['window']['cutoff']}")
+    typer.echo(f"자료 충족 상태: {'불완전 보고서' if quality_warnings(report) else '수집 범위 내 보고서'}")
+    typer.echo(f"저장 경로: {path.resolve()}")
+
+
+@app.command()
+def doctor() -> None:
+    """Diagnose API settings and host reachability visible to this process."""
+    typer.echo(diagnose_runtime())
+
+
+@app.command("network-policy")
+def network_policy(
+    output_format: str = typer.Option("json", "--format", help="Output format: json or text"),
+) -> None:
+    """Export the DNS and TCP destinations the current worker needs; does not change host policy."""
+    policy = worker_network_policy()
+    if output_format == "json":
+        typer.echo(json.dumps(policy, ensure_ascii=False, indent=2))
+        return
+    if output_format != "text":
+        console.print("--format must be json or text", style="red")
+        raise typer.Exit(code=2)
+
+    typer.echo(f"정책 적용 위치: {policy['policy_owner']} (이 명령은 정책을 변경하지 않음)")
+    typer.echo("DNS: 워커 resolver로 UDP/TCP 53 허용")
+    typer.echo("TCP 목적지:")
+    for destination in policy["destinations"]:
+        scope = "로컬" if destination["scope"] == "loopback" else "네트워크"
+        sources = ", ".join(destination["sources"])
+        typer.echo(f"- {destination['hostname']}:{destination['port']} ({scope}; {sources})")
+    if policy["unresolved"]:
+        typer.echo("확인 불가: " + ", ".join(policy["unresolved"]))
 
 
 @app.callback(invoke_without_command=True)
@@ -158,6 +218,65 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+@app.command("style-backtest")
+def style_backtest(
+    tickers: str = typer.Argument(..., help="Comma-separated US tickers, e.g. NVDA,AAPL"),
+    start: str = typer.Option(..., "--start", help="First analysis date, YYYY-MM-DD"),
+    end: str = typer.Option(..., "--end", help="Last analysis date, YYYY-MM-DD"),
+    every: int = typer.Option(30, "--every", help="Days between analysis dates"),
+):
+    """Check whether code-computed style signals predicted alpha. Calls no model."""
+    names = [t.strip() for t in tickers.split(",") if t.strip()]
+    try:
+        dates = iter_grid(start, end, every)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    if not names:
+        console.print("[red]No ticker to score; pass them comma-separated, e.g. NVDA,AAPL[/red]")
+        raise typer.Exit(code=1)
+    result = evaluate_styles(names, dates, progress=lambda done, total, ticker: console.print(
+        f"[dim][{done}/{total}] {ticker}[/dim]"))
+    console.print(escape(result.render()))
+
+
+@app.command("discover")
+def discover(
+    tickers: str | None = typer.Option(
+        None, "--tickers", help="Comma-separated US stock tickers, up to 10, e.g. NVDA,AAPL"
+    ),
+    universe: str | None = typer.Option(
+        None,
+        "--universe",
+        help=(
+            "Comma-separated sections: us-listed, nasdaq100, sp500, russell1000, "
+            "russell2000, sp400, sp600, largecap, midcap, smallcap, microcap, all"
+        ),
+    ),
+):
+    """Screen supplied tickers or US market sections with deterministic signals; calls no model."""
+    if (tickers is None) == (universe is None):
+        console.print("Provide exactly one of --tickers or --universe.", style="red", markup=False)
+        raise typer.Exit(code=1)
+    try:
+        if universe is not None:
+            selections = [value.strip().lower() for value in universe.split(",")]
+            if selections == ["nasdaq100"]:
+                result = discover_nasdaq100()
+            else:
+                def report_progress(done: int, total: int, ticker: str) -> None:
+                    if done == 1 or done % 100 == 0 or done == total:
+                        console.print(f"[{done}/{total}] {ticker}", markup=False, style="dim")
+
+                result = discover_market(selections, progress=report_progress)
+        else:
+            result = discover_stocks([ticker.strip() for ticker in tickers.split(",")])
+    except ValueError as exc:
+        console.print(str(exc), style="red", markup=False)
+        raise typer.Exit(code=1) from None
+    console.print(result.render(), markup=False)
 
 
 # The plans `login` and `logout` take: the providers signed in to, not keyed.

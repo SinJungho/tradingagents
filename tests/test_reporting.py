@@ -42,6 +42,29 @@ def test_write_report_tree_creates_files(tmp_path):
 
 
 @pytest.mark.unit
+def test_source_failure_summary_is_written_to_markdown_and_html(tmp_path):
+    failure = "- get_prediction_markets data retrieval failed: 연결 오류 (재시도 가능: 예) (3회)"
+
+    write_report_tree(dict(_state(), source_failures=failure), "AAPL", tmp_path, html=True)
+
+    assert failure in (tmp_path / "complete_report.md").read_text(encoding="utf-8")
+    assert failure in (tmp_path / "6_data_sources" / "failures.md").read_text(encoding="utf-8")
+    page = (tmp_path / "complete_report.html").read_text(encoding="utf-8")
+    assert "VI. Data Source Failures" in page
+    assert "get_prediction_markets" in page and "3회" in page
+
+
+@pytest.mark.unit
+def test_source_failure_file_is_removed_when_the_next_report_has_no_failures(tmp_path):
+    write_report_tree(dict(_state(), source_failures="- old failure"), "AAPL", tmp_path)
+
+    write_report_tree(_state(), "AAPL", tmp_path)
+
+    assert not (tmp_path / "6_data_sources" / "failures.md").exists()
+    assert "old failure" not in (tmp_path / "complete_report.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.unit
 def test_save_reports_explicit_path(tmp_path):
     graph = SimpleNamespace(run_settings=lambda: SETTINGS)
     out = TradingAgentsGraph.save_reports(graph, _state(), "AAPL", save_path=tmp_path)

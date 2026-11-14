@@ -83,6 +83,23 @@ def test_the_indicator_path_retries_a_rate_limit(yahoo):
 
 
 @pytest.mark.unit
+def test_yfinance_transient_transport_error_retries_once(yahoo, caplog):
+    calls = []
+
+    def request():
+        calls.append(True)
+        if len(calls) == 1:
+            raise ConnectionError("synthetic private transport detail")
+        return "data"
+
+    assert common.yf_retry(request) == "data"
+    assert len(calls) == 2
+    assert "provider=Yahoo Finance host=query2.finance.yahoo.com" in caplog.text
+    assert "category=connection attempt=1/2" in caplog.text
+    assert "synthetic private transport detail" not in caplog.text
+
+
+@pytest.mark.unit
 def test_yfinance_raises_the_rate_limit_from_history(yahoo):
     yahoo.setattr(YfData, "_make_request", _rate_limited)
 

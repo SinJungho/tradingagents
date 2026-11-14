@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=42.0",
+    "exchange-calendars>=4.13.2,<5",
     "langchain-core>=1.6.5",
     "langchain-anthropic>=1.7.4",
     "langchain-google-genai>=4.4.0",
@@ -40,6 +41,10 @@ dev = [
 # stays lean: pip install "tradingagents[bedrock]".
 bedrock = [
     "langchain-aws>=1.7.9",
+]
+# Local Sign in with ChatGPT token validation (no API key or client secret).
+chatgpt-plan = [
+    "PyJWT[crypto]>=2.10.1",
 ]
 
 [project.scripts]

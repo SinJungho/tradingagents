@@ -133,6 +133,10 @@ class DeepSeekChatOpenAI(NormalizedChatOpenAI):
         return chat_result
 
 
+class NvidiaChatOpenAI(DeepSeekChatOpenAI):
+    """NVIDIA NIM client that preserves reasoning fields when present."""
+
+
 class MinimaxChatOpenAI(NormalizedChatOpenAI):
     """MiniMax-specific overrides on top of the OpenAI-compatible client.
 
@@ -211,7 +215,7 @@ def _chatgpt_credential() -> Callable[[], str]:
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
     "timeout", "max_retries", "reasoning_effort", "temperature", "max_tokens",
-    "api_key", "callbacks", "http_client", "http_async_client",
+    "api_key", "callbacks", "http_client", "http_async_client", "extra_body",
 )
 
 # OpenAI's ``reasoning_effort`` is only accepted by reasoning models — GPT-5 and
@@ -274,7 +278,7 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "mistral":    ProviderSpec(base_url="https://api.mistral.ai/v1"),
     "kimi":       ProviderSpec(base_url="https://api.moonshot.ai/v1"),
     "groq":       ProviderSpec(base_url="https://api.groq.com/openai/v1"),
-    "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
+    "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1", chat_class=NvidiaChatOpenAI),
     "ollama":     ProviderSpec(base_url="http://localhost:11434/v1", base_url_env="OLLAMA_BASE_URL",
                                key_optional=True, placeholder_key="ollama",
                                chat_class=LocalCompatibleChatOpenAI),
@@ -343,6 +347,24 @@ class OpenAIClient(BaseLLMClient):
 
     def get_llm(self) -> Any:
         """Return a configured ChatOpenAI instance, driven by the provider registry."""
+        auth_mode = self.kwargs.get("openai_auth", "api_key")
+        if auth_mode not in ("api_key", "chatgpt_plan"):
+            raise ValueError("openai_auth must be 'api_key' or 'chatgpt_plan'.")
+        if auth_mode == "chatgpt_plan":
+            if self.provider != "openai":
+                raise ValueError("ChatGPT plan authentication is available only for provider 'openai'.")
+            if self.base_url and not _is_native_openai_base_url(self.base_url):
+                raise ValueError("ChatGPT plan authentication requires api.openai.com.")
+            from ..chatgpt_plan_auth import get_access_token
+            from .chatgpt_plan import ChatGPTPlanChatModel
+
+            return ChatGPTPlanChatModel(
+                model=self.model,
+                token_provider=get_access_token,
+                timeout=self.kwargs.get("timeout"),
+                callbacks=self.kwargs.get("callbacks"),
+            )
+
         self.warn_if_unknown_model()
         llm_kwargs = {"model": self.model}
         spec = OPENAI_COMPATIBLE_PROVIDERS.get(self.provider)

@@ -304,6 +304,11 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             instrument_context=self.resolve_instrument_context(company_name, asset_type, trade_date),
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
+            portfolio_context_provided=portfolio is not None,
+            portfolio_positions=(
+                [{"ticker": p.ticker, "quantity": p.quantity} for p in portfolio.positions]
+                if portfolio is not None else []
+            ),
         )
 
     def _memory_step(self, state):

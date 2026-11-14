@@ -1,0 +1,3 @@
+# Orca worktree hooks: give each new worktree its own editable venv with dev tools.
+scripts:
+  setup: uv venv -q .venv && uv pip install -q --python .venv/bin/python -e '.[dev]'

@@ -689,7 +689,7 @@ def ensure_signed_in(provider: str) -> None:
     console.print(f"[green]✓ Using your ChatGPT plan:[/green] {escape(chatgpt_auth.signed_in_as() or '')}")
 
 
-def ensure_api_key(provider: str) -> str | None:
+def ensure_api_key(provider: str, auth_mode: str | None = None) -> str | None:
     """Make sure the API key for `provider` is available in the environment.
 
     If the env var is already set, returns its value untouched. Otherwise
@@ -700,6 +700,15 @@ def ensure_api_key(provider: str) -> str | None:
     Returns None for providers that do not require a key (e.g. ollama)
     and for providers not found in the canonical mapping.
     """
+    selected_auth = auth_mode or os.environ.get("TRADINGAGENTS_OPENAI_AUTH", "api_key")
+    if selected_auth == "chatgpt_plan":
+        if provider.lower() != "openai":
+            raise ValueError("TRADINGAGENTS_OPENAI_AUTH=chatgpt_plan requires provider 'openai'.")
+        console.print(
+            "[green]✓ ChatGPT plan authentication selected; no OpenAI API key will be used.[/green]"
+        )
+        return None
+
     env_var = get_api_key_env(provider)
     if env_var is None:
         return None  # ollama / unknown — no key check possible

@@ -64,6 +64,120 @@ def test_help_lists_the_backtest_command(runner):
     assert "backtest" in runner.invoke(m.app, ["--help"]).output
 
 
+@pytest.mark.unit
+def test_discover_command_passes_the_supplied_ticker_order_without_running_analysis(
+    runner, monkeypatch
+):
+    from types import SimpleNamespace
+
+    selected = []
+    monkeypatch.setattr(
+        m,
+        "discover_stocks",
+        lambda tickers: selected.append(tickers) or SimpleNamespace(render=lambda: "fixture output"),
+    )
+
+    result = runner.invoke(m.app, ["discover", "--tickers", "aaa,BRK.B"])
+
+    assert result.exit_code == 0, result.output
+    assert selected == [["aaa", "BRK.B"]]
+    assert "fixture output" in result.output
+    assert calls == []
+
+
+@pytest.mark.unit
+def test_discover_command_reports_invalid_input_without_traceback(runner, monkeypatch):
+    def invalid(_tickers):
+        raise ValueError("provide between 1 and 10 tickers")
+
+    monkeypatch.setattr(m, "discover_stocks", invalid)
+    result = runner.invoke(m.app, ["discover", "--tickers", "AAPL"])
+
+    assert result.exit_code == 1
+    assert "between 1 and 10" in result.output
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.unit
+def test_help_lists_discover_command(runner):
+    result = runner.invoke(m.app, ["--help"])
+    assert "discover" in result.output
+
+
+@pytest.mark.unit
+def test_discover_command_accepts_nasdaq100_universe_without_running_analysis(runner, monkeypatch):
+    from types import SimpleNamespace
+
+    selected = []
+    monkeypatch.setattr(
+        m,
+        "discover_nasdaq100",
+        lambda: selected.append("nasdaq100") or SimpleNamespace(render=lambda: "universe fixture output"),
+    )
+
+    result = runner.invoke(m.app, ["discover", "--universe", "nasdaq100"])
+
+    assert result.exit_code == 0, result.output
+    assert selected == ["nasdaq100"]
+    assert "universe fixture output" in result.output
+    assert calls == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["discover"],
+        ["discover", "--tickers", "AAPL", "--universe", "nasdaq100"],
+        ["discover", "--universe", "unknown"],
+    ],
+)
+def test_discover_rejects_missing_conflicting_or_unknown_universe_before_scoring(runner, monkeypatch, args):
+    supplied = []
+    universe = []
+    monkeypatch.setattr(m, "discover_stocks", lambda _tickers: supplied.append(True))
+    monkeypatch.setattr(m, "discover_nasdaq100", lambda: universe.append(True))
+
+    result = runner.invoke(m.app, args)
+
+    assert result.exit_code == 1
+    assert supplied == []
+    assert universe == []
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.unit
+def test_discover_help_describes_universe_option(runner):
+    result = runner.invoke(m.app, ["discover", "--help"])
+
+    assert result.exit_code == 0
+    assert "--universe" in result.output
+    assert "nasdaq100" in result.output
+    assert "russell2000" in result.output
+    assert "all" in result.output
+
+
+@pytest.mark.unit
+def test_discover_command_routes_market_sections_without_running_analysis(runner, monkeypatch):
+    from types import SimpleNamespace
+
+    selected = []
+    monkeypatch.setattr(
+        m,
+        "discover_market",
+        lambda names, **kwargs: selected.append((names, kwargs))
+        or SimpleNamespace(render=lambda: "market sections fixture"),
+    )
+
+    result = runner.invoke(m.app, ["discover", "--universe", "sp500,russell2000,smallcap"])
+
+    assert result.exit_code == 0, result.output
+    assert selected[0][0] == ["sp500", "russell2000", "smallcap"]
+    assert callable(selected[0][1]["progress"])
+    assert "market sections fixture" in result.output
+    assert calls == []
+
+
 class _Result:
     def __init__(self, tmp_path):
         self.run_id = "20260916_000000"

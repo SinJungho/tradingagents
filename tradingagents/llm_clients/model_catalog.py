@@ -25,6 +25,7 @@ _GLM_MODELS: dict[str, list[ModelOption]] = {
     ],
     "deep": [
         ("GLM-5.3 - Latest flagship, 1M ctx", "glm-5.3"),
+        ("GLM-5.3-Flash - Fast, capable model", "glm-5.3-flash"),
         ("GLM-5.2 - 744B, 1M ctx", "glm-5.2"),
         ("GLM-5.1 - 745B, 200K ctx", "glm-5.1"),
         ("GLM-4.7 - Previous-gen flagship", "glm-4.7"),
@@ -102,7 +103,8 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
         "deep": [
-            ("GPT-6 Sol - Complex reasoning and analysis", "gpt-6-sol"),
+            ("GPT-6.1 Sol - Complex reasoning and analysis", "gpt-6.1-sol"),
+            ("GPT-6 Sol - Previous generation", "gpt-6-sol"),
             ("GPT-6 Astra - Hardest multi-step reasoning", "gpt-6-astra"),
             ("GPT-5.6 - Previous-gen reasoning (Sol)", "gpt-5.6"),
             ("GPT-5.5 - Earlier frontier, 1M context", "gpt-5.5"),

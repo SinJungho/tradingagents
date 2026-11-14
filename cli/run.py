@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import webbrowser
+from collections import Counter
 from functools import wraps
 from pathlib import Path
 
@@ -25,6 +26,8 @@ from cli.display import (
 from cli.selections import depth_from_env, get_user_selections, unattended_gaps
 from cli.stats_handler import StatsCallbackHandler
 from tradingagents.agents.rating import is_review, run_rating
+from tradingagents.api_diagnostics import format_api_failure
+from tradingagents.dataflows.errors import drain_source_failures
 from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.analyst_execution import (
@@ -96,6 +99,18 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return config
 
 
+def _drain_source_failure_summary() -> str:
+    """Aggregate this run's degraded data calls without exposing exception text."""
+    counts = Counter(
+        (method, format_api_failure(error))
+        for method, error in drain_source_failures()
+    )
+    return "\n".join(
+        f"- {method} data retrieval failed: {failure} ({count}회)"
+        for (method, failure), count in counts.items()
+    )
+
+
 def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
     flags = flags or {}
     # With no terminal nothing can answer a prompt: name every question still
@@ -119,6 +134,10 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
     selected_analyst_keys = [a for a in ANALYST_ORDER if a in selected_set]
     analyst_execution_plan = build_analyst_execution_plan(selected_analyst_keys)
     analyst_wall_time_tracker = AnalystWallTimeTracker(analyst_execution_plan)
+
+    # Failures and Polymarket circuits are process-scoped; start each CLI run
+    # with a clean slate and collect only failures raised by this analysis.
+    drain_source_failures()
 
     graph = TradingAgentsGraph(
         selected_analyst_keys,
@@ -346,6 +365,7 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
             final_state = {}
             for chunk in trace:
                 final_state.update(chunk)
+            final_state["source_failures"] = _drain_source_failure_summary()
 
             # Clean run: log the decision, then drop this run's checkpoint so a
             # later run starts fresh. A mid-stream failure skips both, keeping
@@ -356,7 +376,12 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
             )
         finally:
             # Always restore the plain uncheckpointed graph, even on failure.
-            graph.end_checkpoint()
+            try:
+                graph.end_checkpoint()
+            finally:
+                # A failed stream still must not carry its source circuit into
+                # the next independent analysis.
+                drain_source_failures()
 
         for agent in message_buffer.agent_status:
             message_buffer.update_agent_status(agent, "completed")

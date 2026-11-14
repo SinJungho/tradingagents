@@ -82,6 +82,15 @@ _MINIMAX_THINKING = ModelCapabilities(
     requires_reasoning_split=True,
 )
 
+# Z.AI accepts tool_choice="auto" only; omit the explicit tool choice while
+# retaining function-calling structured output.
+_GLM = ModelCapabilities(
+    supports_tool_choice=False,
+    supports_json_mode=True,
+    supports_json_schema=True,
+    preferred_structured_method="function_calling",
+)
+
 _DEFAULT = ModelCapabilities(
     supports_tool_choice=True,
     supports_json_mode=True,
@@ -114,6 +123,7 @@ _BY_ID: dict[str, ModelCapabilities] = {
 # picker offers for V4.1 Flash; it serves thinking mode and so rejects
 # ``tool_choice`` exactly like the versioned ``deepseek-v4-flash`` ID does.
 _BY_PATTERN: list[tuple[re.Pattern[str], ModelCapabilities]] = [
+    (re.compile(r"^glm-"), _GLM),
     (re.compile(r"^deepseek-v\d"), _DEEPSEEK_THINKING),
     (re.compile(r"^deepseek-reasoner"), _DEEPSEEK_THINKING),
     (re.compile(r"^deepseek-flash"), _DEEPSEEK_THINKING),
@@ -129,8 +139,11 @@ def get_capabilities(model_name: str) -> ModelCapabilities:
     # ``deepseek-v4-flash`` does, not fall through to _DEFAULT (#1199). Only the
     # official namespace is stripped; third-party finetunes on other publishers
     # (e.g. ``tngtech/deepseek-...``) keep _DEFAULT, since their quirks are unknown.
-    if model_name.startswith("deepseek/"):
-        model_name = model_name.removeprefix("deepseek/")
+    for namespace in ("deepseek", "deepseek-ai", "z-ai"):
+        prefix = f"{namespace}/"
+        if model_name.startswith(prefix):
+            model_name = model_name.removeprefix(prefix)
+            break
 
     if model_name in _BY_ID:
         return _BY_ID[model_name]

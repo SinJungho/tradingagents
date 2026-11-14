@@ -1,0 +1,24 @@
+# AGENTS.md: live broker reads and real LLM runs need the user's explicit go-ahead.
+prefix_rule(
+    pattern=[["tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"], "portfolio", "live"],
+    decision="prompt",
+    justification="실계좌 조회는 사용자가 명시적으로 요청한 경우에만 실행합니다.",
+    match=["tradingagents portfolio live --symbol TQQQ"],
+    not_match=["tradingagents portfolio demo"],
+)
+prefix_rule(
+    pattern=[["tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"], "backtest"],
+    decision="prompt",
+    justification="backtest는 셀마다 실제 LLM 분석을 실행합니다.",
+    not_match=["tradingagents style-backtest NVDA"],
+)
+prefix_rule(
+    pattern=[["tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"], "--ticker"],
+    decision="prompt",
+    justification="종목 분석은 실제 LLM을 호출합니다.",
+)
+prefix_rule(
+    pattern=[["tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"], "market-report"],
+    decision="prompt",
+    justification="시장 보고서는 기본적으로 실제 LLM 해석을 호출합니다.",
+)
