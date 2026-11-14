@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-- 브랜치 `work/local-improvements`를 fork(`SinJungho/tradingagents`)에 푸시했고 fork `main` 대상 PR #1이 열려 있다.
+- 브랜치 `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1로 `main`에 병합됐다(2026-11-14, merge commit `24f35ab`).
 - 진행 중인 OpenSpec 변경안은 `2026-11-13-polymarket-network-verification` 하나이며 E3 집 네트워크 검증만 남았다.
 - 최근 검증: pytest 1,840 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 17개 통과.
 - 시장 보고서: 실제 LLM 재평가(Red 64, Blue 78; 이전 52, 73)의 지적을 고쳤다. 뉴스 50건 조회와 공급자 한도 표시, 금리 관측일 불일치 비고, DXY(ICE DXY) 라벨, 핵심 요약의 최대 변동 포함, 지수 이름 숫자의 해석 검사 제외. 기록: `results/market-reports/2026-11-12-a80efcde3994475289e8c78f4777e5ea/quality-review.md`.
@@ -19,11 +19,10 @@
 
 | 순서 | 작업 | 이유와 방법 | 규모 |
 | --- | --- | --- | --- |
-| 1 | PR #1 검토·병합 | fork `main` 대상 PR #1(84커밋, 2026-11-14 확인 시 충돌 없음)이 열려 있다. https://github.com/SinJungho/tradingagents/pull/1 | 중간 |
-| 2 | `SEC_EDGAR_USER_AGENT`에 실제 연락처 설정 | SEC·BLS 요청은 연락처가 든 User-Agent를 요구한다. 설정이 없으면 자리표시자 `contact@example.com`을 보낸다. `.env`에 `SEC_EDGAR_USER_AGENT="이름 이메일"` 형식으로 직접 넣는다(에이전트는 `.env`를 열람하지 않는다). | 작음 |
-| 3 | Orca에서 `orca.yaml` setup 승인 | Orca는 setup 내용이 바뀌면 승인 전까지 건너뛴다. 다음 워크트리 생성 때 승인하거나 `--setup run`을 쓴다. | 작음 |
-| 4 | 집 네트워크에서 E3 검증 요청 | 집 네트워크에 연결된 상태에서 에이전트에게 E3 진행을 요청한다. 에이전트가 `tradingagents doctor`와 Polymarket 공개 검색 GET(별칭·direct)을 실행해 상태·파싱·시각을 기록하고 변경안을 마무리한다. | 작음 |
-| 5 | Russell 2000 출처 재확인 요청(가끔) | iShares IWM 보유 종목이 CSV로 돌아왔는지 에이전트에게 확인을 요청한다. 복구 전까지 `discover --universe russell2000`은 실패한다. | 작음 |
+| 1 | `SEC_EDGAR_USER_AGENT`에 실제 연락처 설정 | SEC·BLS 요청은 연락처가 든 User-Agent를 요구한다. 설정이 없으면 자리표시자 `contact@example.com`을 보낸다. `.env`에 `SEC_EDGAR_USER_AGENT="이름 이메일"` 형식으로 직접 넣는다(에이전트는 `.env`를 열람하지 않는다). | 작음 |
+| 2 | Orca에서 `orca.yaml` setup 승인 | Orca는 setup 내용이 바뀌면 승인 전까지 건너뛴다. 다음 워크트리 생성 때 승인하거나 `--setup run`을 쓴다. | 작음 |
+| 3 | 집 네트워크에서 E3 검증 요청 | 집 네트워크에 연결된 상태에서 에이전트에게 E3 진행을 요청한다. 에이전트가 `tradingagents doctor`와 Polymarket 공개 검색 GET(별칭·direct)을 실행해 상태·파싱·시각을 기록하고 변경안을 마무리한다. | 작음 |
+| 4 | Russell 2000 출처 재확인 요청(가끔) | iShares IWM 보유 종목이 CSV로 돌아왔는지 에이전트에게 확인을 요청한다. 복구 전까지 `discover --universe russell2000`은 실패한다. | 작음 |
 
 ## 우선순위
 
