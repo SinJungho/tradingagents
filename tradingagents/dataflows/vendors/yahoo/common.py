@@ -3,6 +3,7 @@ reported, and how a price is written out."""
 
 import logging
 import math
+import threading
 import time
 
 import yfinance as yf
@@ -62,6 +63,32 @@ def _answered_empty(exc: Exception) -> bool:
     return getattr(getattr(exc, "response", None), "status_code", None) == 404
 
 
+# Yahoo publishes no limit. A whole-market discovery (~5,650 symbols on 8 workers) drew
+# sustained HTTP 429s, so calls in one process share a spacing that doubles after each 429
+# and eases back after successes. S&P 500-sized runs stay near the floor.
+_MIN_INTERVAL, _MAX_INTERVAL = 0.05, 1.0
+_interval = _MIN_INTERVAL
+_next_call_at = 0.0
+_pace_lock = threading.Lock()
+
+
+def _wait_turn() -> None:
+    global _next_call_at
+    with _pace_lock:
+        now = time.monotonic()
+        start = max(now, _next_call_at)
+        _next_call_at = start + _interval
+    if start > now:
+        time.sleep(start - now)
+
+
+def _adjust_pace(rate_limited: bool) -> None:
+    global _interval
+    with _pace_lock:
+        _interval = (min(_MAX_INTERVAL, _interval * 2) if rate_limited
+                     else max(_MIN_INTERVAL, _interval * 0.95))
+
+
 def yf_retry(func, max_retries=3, base_delay=2.0):
     """Retry rate limits and transient Yahoo transport failures.
 
@@ -75,9 +102,13 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
     one again reads an empty profile.
     """
     for attempt in range(max_retries + 1):
+        _wait_turn()
         try:
-            return func()
+            result = func()
+            _adjust_pace(rate_limited=False)
+            return result
         except YFRateLimitError:
+            _adjust_pace(rate_limited=True)
             if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
                 logger.warning(

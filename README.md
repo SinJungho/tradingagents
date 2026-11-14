@@ -242,13 +242,13 @@ Deterministic discovery can screen supplied tickers or market sections without c
 
 ```bash
 tradingagents discover --tickers NVDA,AAPL
-tradingagents discover --universe sp500,russell2000,smallcap
+tradingagents discover --universe sp500,sp600,smallcap
 tradingagents discover --universe all
 ```
 
 `--universe all` includes the current U.S. exchange-listed common-stock universe, Nasdaq-100, S&P 500, Russell 1000/2000, S&P MidCap 400 and S&P SmallCap 600 sections, plus large-, mid-, small- and micro-cap bands. Cap bands use Yahoo Finance's current market-cap snapshot and project-defined thresholds: $10B+, $2B–$10B, $300M–$2B and below $300M. OTC securities are outside the listing universe. Nasdaq Trader files exclude ETFs, test issues and explicitly identified non-common securities; other listing types may still require review.
 
-Index membership sources appear in the output. The public S&P and Russell 1000 lists are secondary sources; Russell 2000 uses iShares IWM holdings as a proxy and can differ from official membership. The screen computes the existing value, growth, quality and momentum signals once per unique ticker, shows up to 10 Bullish names per factor and section in factor-score order, and creates no cross-factor rank or investment recommendation. A first whole-market run can take a long time because it retrieves price history and SEC facts for each symbol. Select up to 10 candidates and run the regular `tradingagents --ticker <T> --date <YYYY-MM-DD>` workflow separately for deeper analysis.
+Index membership sources appear in the output. The public S&P and Russell 1000 lists are secondary sources; Russell 2000 uses iShares IWM holdings as a proxy and can differ from official membership. As of November 2026 the iShares holdings link returns a web page instead of the CSV, so the `russell2000` section fails with that cause: alone it stops the run, and within `all` or a multi-section selection it is listed as a source failure while the other sections continue. The screen computes the existing value, growth, quality and momentum signals once per unique ticker, shows up to 10 Bullish names per factor and section in factor-score order, and creates no cross-factor rank or investment recommendation. Price history, SEC facts and split history are fetched once per symbol on eight parallel workers, with SEC requests limited to eight per second; Yahoo calls also share an adaptive pace that widens after HTTP 429 responses. Measured in November 2026: a first S&P 500 run (503 tickers, empty caches) took about 140 seconds; a whole-market run (about 5,650 tickers) took about 45 minutes with empty caches and about 23 minutes with SEC facts cached, and Yahoo rate limits still left roughly 4–5% of tickers with a provider failure listed in the output. Select up to 10 candidates and run the regular `tradingagents --ticker <T> --date <YYYY-MM-DD>` workflow separately for deeper analysis.
 
 At start-up the interactive CLI mentions a newer release and notices from Tauric Research. It checks at most once a day, in the background, and sends nothing about your runs; set `TRADINGAGENTS_NO_UPDATE_CHECK=1` to turn it off. Runs without a terminal never check.
 
@@ -503,12 +503,18 @@ tradingagents market-report
 tradingagents market-report --no-llm --output-dir results/market-reports
 ```
 
-동부시간 20시 이후에는 당일, 그 이전·휴장일에는 직전 완료 거래일을 선택합니다. 거래소 캘린더로 휴장·조기 폐장·서머타임을 처리합니다. 기본 명령은 기존 deep 모델로 한국어 해석을 작성하며, `--no-llm`은 모델을 호출하지 않습니다. 예약 실행과 계좌 조회는 없습니다.
+동부시간 20시 이후에는 당일, 그 이전·휴장일에는 직전 완료 거래일을 선택합니다. 거래소 캘린더로 휴장·조기 폐장·서머타임을 처리합니다. 기본 명령은 기존 deep 모델로 한국어 해석을 작성하며, `--no-llm`은 모델을 호출하지 않습니다. 예약 실행과 계좌 조회는 없습니다. 다음 정규장 개장(09:30 ET) 이후에 생성하면 공급자의 전날 장후 5분 봉과 최신 뉴스 범위가 줄 수 있어 머리말에 주의를 표시하므로, 동부시간 20시 이후 다음 개장 전에 실행하는 것을 권합니다.
 
-각 실행을 새 폴더에 `report.md`, `report.html`, `evidence.json`으로 저장합니다. 지수·11개 업종 ETF·S&P 500 구성 표본의 시장 폭·매크로·기업 뉴스·장후·다음 거래일 일정을 포함합니다. 출처와 시각을 붙이고 자료가 부족하면 첫 화면에 **불완전 보고서**와 누락 범위를 표시합니다. HTML에는 표·목차·출처 링크가 있으며 외부 스크립트를 실행하지 않습니다.
+각 실행을 새 폴더에 `report.md`, `report.html`, `evidence.json`으로 저장합니다. 지수·11개 업종 ETF·시장 폭·매크로·기업 뉴스·실적 공시·장후·다음 거래일 일정을 포함합니다. 출처와 시각을 붙이고, 조회 실패나 부분 자료가 있으면 첫 화면에 **불완전 보고서**와 누락 범위를 표시합니다. 조회는 성공했지만 해당 자료가 없는 경우(기사·일정 없음)는 "해당 없음"으로 따로 표시하며 경고로 세지 않습니다. HTML에는 표·목차·출처 링크가 있으며 외부 스크립트를 실행하지 않습니다.
 
-Yahoo의 무료 공개 자료와 무료 키가 필요한 FRED를 사용합니다. 정규장 종가는 비수정, 기간 수익률과 시장 폭은 수정 종가이며 빠진 거래일을 보간하지 않습니다. FRED는 전일까지의 빈티지를 사용하고 관측 기간·빈도·단위와 미확인 발표 시각을 구분합니다. 다음 거래일 일정은 조회 당시 정보로, 과거 시점의 공지 여부를 보장하지 않습니다.
+Yahoo·SPDR·SEC·BLS·Census·BEA·Fed의 무료 공개 자료와 무료 키가 필요한 FRED를 사용합니다. 정규장 종가는 비수정, 기간 수익률과 시장 폭은 수정 종가이며 빠진 거래일을 보간하지 않습니다.
 
-장후는 ES/NQ/YM/RTY 선물과 AAPL·MSFT·NVDA·AMZN·GOOGL·META·TSLA 표본의 20시 이전 완료된 5분 봉입니다. 전체 시장 장후 순위가 아니며 선물 기준 가격은 주식시장 폐장 시각 직전 가격으로 결제가격과 다릅니다. 실적 발표값·가이던스·정책 일정의 공개 시각을 검증하지 못하면 확인 불가로 남깁니다. LLM 실패나 근거 검사 탈락 시에도 수치·출처 보고서를 저장합니다. 검사는 사실성 보증이 아닙니다.
+- 시장 폭: SPDR SPY 일별 보유 종목을 날짜가 있는 대용치로 쓰며 공식 S&P 500 구성 목록이 아닙니다. 실패하면 Wikipedia 현재 구성으로 대체하고 구성 기준일을 미확인으로 둡니다. 이력이 짧은 종목은 해당 구간 분모에서 빼고 비고에 밝힙니다.
+- 매크로: FRED는 전일까지의 빈티지를 사용하고 관측 기간·빈도·단위를 표시하며, 2년·10년 금리와 금리차의 관측일이 다르면 비고에 밝힙니다. 미 달러 지수(ICE DXY)와 FRED 무역가중 달러 지수(광의)를 다른 지표로 따로 표시합니다. DXY·WTI·금은 20시 이전 마지막 5분 봉과 직전 거래일 같은 기준 대비 변화율을 보여 줍니다.
+- 뉴스: 심볼별 최신 50건에서 보고 구간 기사만 쓰고, ETF 보유 변동·애널리스트 의견 틀 제목은 제외하되 제목을 요약 항목에 남깁니다. 최신 50건이 모두 구간 이후라 구간을 확인하지 못하면 "해당 없음"이 아니라 미확인으로 표시합니다.
+- 실적: 표본 7종목의 대상일 SEC 8-K Item 2.02 제출을 확인하고, 제출 종목만 Yahoo EPS·예상치를 2차 출처로 붙입니다. 서프라이즈는 두 값이 모두 있을 때만 계산하고, 가이던스는 구조화된 무료 출처가 없어 미확인으로 둡니다. SEC와 BLS 요청에는 `SEC_EDGAR_USER_AGENT`의 연락처가 쓰이므로 본인 이름과 이메일을 설정하세요.
+- 다음 거래일 일정: BLS·Census·BEA·Fed 공식 일정의 발표 시각을 FRED 선별 발표와 합칩니다. 주간 실업수당 발표 시각은 수집하지 않으며 머리말 고정 안내로 밝힙니다. 일정은 조회 당시 정보로, 과거 시점의 공지 여부를 보장하지 않습니다.
 
-발굴 출력에는 출처 URL·조회 시각·구성 기준일·출처 종류와 단계별 소요 시간·호출 수가 포함됩니다. 동일 실행에서 공급자 심볼 별칭의 가격·SEC·분할 결과와 실패를 재사용하며 SEC 공통 티커 표는 한 번만 읽습니다. 기존 디스크 캐시 만료 정책은 유지합니다.
+장후는 ES/NQ/YM/RTY 선물과 AAPL·MSFT·NVDA·AMZN·GOOGL·META·TSLA 표본의 20시 이전 완료된 5분 봉입니다. 전체 시장 장후 순위가 아니며 선물 기준 가격은 주식시장 폐장 시각 직전 가격으로 결제가격과 다릅니다. LLM 해석은 근거 ID 검증과 숫자 사용 금지 검사를 통과해야 보고서에 들어가며, 실패하거나 탈락해도 수치·출처 보고서는 저장합니다. 검사는 사실성 보증이 아닙니다.
+
+발굴 출력에는 출처 URL·조회 시각·구성 기준일·출처 종류와 단계별 소요 시간·호출 수가 포함됩니다. 동일 실행에서 공급자 심볼 별칭의 가격·SEC·분할 결과와 실패를 재사용하며 SEC 공통 티커 표는 한 번만 읽습니다. 가격·SEC·분할은 작업 8개로 병렬 조회하고 SEC 요청은 초당 8회로 제한합니다. 기존 디스크 캐시 만료 정책은 유지합니다.

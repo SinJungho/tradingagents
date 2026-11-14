@@ -133,7 +133,7 @@ def test_breadth_short_history_is_available_but_query_failure_is_partial():
     assert breadth['status'] == 'available'
     assert breadth['value']['excluded_50'] == breadth['value']['excluded_200'] == 1
     assert '이력 부족 종목은 해당 구간 분모에서 제외' in breadth['note']
-    assert '50일 1개' in breadth['note'] and '200일 1개' in breadth['note']
+    assert '50일 AAA' in breadth['note'] and '200일 AAA' in breadth['note']
 
     provider = FakePublicData()
     provider.universe = lambda: SimpleNamespace(
@@ -1058,3 +1058,83 @@ def test_low_value_headlines_are_excluded_summarized_and_articles_render_as_rows
     article = next(r for r in result['evidence'] if r['label'] == 'Confirmed catalyst')
     assert f"| {article['id']} | 11-12 18:00 | [Confirmed catalyst](<https://example.com/news>) |" in markdown
     assert f"### {article['id']} Confirmed catalyst" not in markdown
+
+
+def test_header_times_render_in_eastern_time_and_none_found_cells_say_so():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-13T09:32:00-05:00')
+    provider.news = lambda symbol: []
+    report = mr.collect_report(provider, provider.now)
+    markdown = mr.render_markdown(report)
+    assert '기준: 2026-11-12 20:00 ET · 정규장 폐장: 2026-11-12 16:00 ET' in markdown
+    assert '생성: 2026-11-13 09:32 ET' in markdown and '다음 정규장 개장(2026-11-13 09:30 ET)' in markdown
+    assert report['window']['close'].endswith('+00:00')  # evidence keeps ISO with a zone
+    item = next(r for r in report['evidence'] if r['label'] == 'AAPL 뉴스')
+    block = markdown.split(f"### {item['id']} AAPL 뉴스", 1)[1].split('###', 1)[0]
+    assert '해당 없음' in block and '확인 불가' not in block.split('출처:')[0]
+
+
+def test_breadth_note_lists_short_history_names_and_truncates_past_ten(monkeypatch):
+    provider = FakePublicData()
+    tickers = tuple(f'N{i:02}' for i in range(12))
+    provider.universe = lambda: SimpleNamespace(tickers=tickers, source='https://example.com/members',
+                                                as_of='2026-11-01', as_of_label='membership as of')
+    original = provider.daily
+
+    def daily(symbol, day):
+        frame = original(symbol, day)
+        return frame.iloc[-30:] if symbol in tickers else frame  # 30 sessions: short for 50 and 200
+
+    provider.daily = daily
+    breadth = next(r for r in mr.collect_report(provider, provider.now)['evidence']
+                   if r['section'] == '시장 폭·참여도' and 'constituents' in (r['value'] or {}))
+    assert '50일 N00, N01' in breadth['note'] and '외 2개' in breadth['note']
+    assert 'N11' not in breadth['note']
+
+
+def test_mass_breadth_failures_are_counted_and_listed_briefly():
+    provider = FakePublicData()
+    tickers = tuple(f'F{i:02}' for i in range(15))
+    provider.universe = lambda: SimpleNamespace(tickers=tickers, source='https://example.com/members',
+                                                as_of='2026-11-01', as_of_label='membership as of')
+    daily, intraday = provider.daily, provider.intraday
+
+    def fail_members(original):
+        def fetch(symbol, day):
+            if symbol in tickers:
+                raise RuntimeError('synthetic rate limit')
+            return original(symbol, day)
+        return fetch
+
+    provider.daily, provider.intraday = fail_members(daily), fail_members(intraday)
+    report = mr.collect_report(provider, provider.now)
+    breadth = next(r for r in report['evidence'] if r['section'] == '시장 폭·참여도' and 'constituents' in (r['value'] or {}))
+    assert breadth['status'] == 'partial'
+    assert '시세 조회 실패 종목 15개: F00, F01' in breadth['reason'] and '외 5개' in breadth['reason']
+    assert 'F14' not in breadth['reason'] and 'F14' not in mr.render_markdown(report).split('## 핵심 요약')[0]
+    assert len(breadth['source_failures_by_symbol']) == 15  # the full list stays in evidence.json
+
+
+def test_friday_futures_are_judged_against_the_weekend_halt():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-14T09:00:00-05:00')  # Saturday: target Friday 11-13
+
+    def intraday(symbol, day):
+        hours = ('15:55', '16:00', '16:55') if symbol.endswith('=F') else ('15:55', '16:00', '19:55')
+        index = pd.DatetimeIndex([f'{day} {h}' for h in hours], tz=mr.ET)
+        return pd.DataFrame({'Close': [100., 101., 102.]}, index=index)
+
+    provider.intraday = intraday
+    report = mr.collect_report(provider, provider.now)
+    assert report['window']['day'] == '2026-11-13'
+    rows = {r['label']: r for r in report['evidence'] if r['section'] == '장후'}
+    es = rows['ES=F S&P 500 선물']
+    assert es['status'] == 'available' and '17:00 ET 주말 휴장' in es['note']
+    assert rows['AAPL 대형주 표본']['status'] == 'available'
+
+    provider.intraday = lambda symbol, day: pd.DataFrame(
+        {'Close': [100., 101., 102.]},
+        index=pd.DatetimeIndex([f'{day} {h}' for h in ('15:55', '16:00', '16:30')], tz=mr.ET))
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence'] if r['section'] == '장후'}
+    assert rows['ES=F S&P 500 선물']['status'] == 'available'  # observed 16:35, within 30 min of 17:00
+    assert rows['AAPL 대형주 표본']['status'] == 'stale'       # stocks keep the 20:00 reference
