@@ -769,9 +769,8 @@ def fetch_market_cap_snapshot() -> tuple[dict[str, int], str]:
     try:
         return market_cap_snapshot()
     except Exception as exc:
-        raise MarketUniverseError(
-            f"Yahoo market-cap screener failed ({type(exc).__name__})"
-        ) from None
+        # Vendor errors carry fixed text; keep the cause (e.g. the paging limit), not just the type.
+        raise MarketUniverseError(f"Yahoo market-cap screener failed: {exc}") from None
 
 
 def fetch_index_universe(key: str) -> DiscoveryUniverse:

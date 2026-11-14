@@ -564,3 +564,19 @@ def test_market_discovery_rejects_invalid_combinations_before_fetching(monkeypat
         stock_discovery.discover_market(["russell5000"])
 
     fetch.assert_not_called()
+
+
+@pytest.mark.unit
+def test_market_cap_screener_queries_listed_exchanges_and_refuses_past_paging_limit(monkeypatch):
+    queries = []
+
+    def screen(query, **kwargs):
+        queries.append(query)
+        return {"total": 10_001, "quotes": [{"symbol": "AAA", "marketCap": 1}]}
+
+    monkeypatch.setattr(yahoo_screener.yf, "screen", screen)
+    with pytest.raises(stock_discovery.MarketUniverseError, match="10001 rows, above its 10000 row paging limit"):
+        stock_discovery.fetch_market_cap_snapshot()
+    text = str(queries[0].to_dict())
+    assert "'region', 'us'" in text and all(f"'exchange', '{code}'" in text for code in yahoo_screener.LISTED_EXCHANGES)
+    assert "PNK" not in text  # OTC stays outside the listing universe

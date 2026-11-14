@@ -8,11 +8,18 @@ import yfinance as yf
 from yfinance import EquityQuery
 
 from tradingagents.dataflows.errors import VendorUnavailableError
+from tradingagents.dataflows.vendors.yahoo.common import yf_retry
+
+# Yahoo serves at most 10,000 screener rows; offsets past that repeat the last page. All US
+# equities (OTC included) now exceed it, so screen only the exchanges the listing universe uses.
+LISTED_EXCHANGES = ("NMS", "NGM", "NCM", "NYQ", "ASE", "PCX", "BTS")
+SCREENER_ROW_LIMIT = 10_000
 
 
 def market_cap_snapshot() -> tuple[dict[str, int], str]:
     """Fetch current US equity market caps in bounded 250-row pages."""
-    query = EquityQuery("eq", ["region", "us"])
+    query = EquityQuery("and", [EquityQuery("eq", ["region", "us"]),
+                                EquityQuery("is-in", ["exchange", *LISTED_EXCHANGES])])
     caps: dict[str, int] = {}
     seen: set[str] = set()
     offset = 0
@@ -20,13 +27,13 @@ def market_cap_snapshot() -> tuple[dict[str, int], str]:
     as_of = datetime.now(UTC).isoformat(timespec="seconds")
     while total is None or offset < total:
         try:
-            page = yf.screen(
+            page = yf_retry(lambda offset=offset: yf.screen(
                 query,
                 offset=offset,
                 size=250,
                 sortField="ticker",
                 sortAsc=True,
-            )
+            ))
         except Exception as exc:
             raise VendorUnavailableError(
                 f"Yahoo market-cap screener failed ({type(exc).__name__})"
@@ -37,6 +44,10 @@ def market_cap_snapshot() -> tuple[dict[str, int], str]:
             raise VendorUnavailableError("Yahoo market-cap screener returned an invalid page")
         if total is None:
             total = page_total
+            if total > SCREENER_ROW_LIMIT:
+                raise VendorUnavailableError(
+                    f"Yahoo market-cap screener has {total} rows, above its {SCREENER_ROW_LIMIT} row paging limit"
+                )
         elif page_total != total:
             raise VendorUnavailableError("Yahoo market-cap screener changed during pagination")
         if not quotes:
