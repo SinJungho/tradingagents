@@ -133,7 +133,7 @@ def test_breadth_short_history_is_available_but_query_failure_is_partial():
     assert breadth['status'] == 'available'
     assert breadth['value']['excluded_50'] == breadth['value']['excluded_200'] == 1
     assert '이력 부족 종목은 해당 구간 분모에서 제외' in breadth['note']
-    assert '50일 1개' in breadth['note'] and '200일 1개' in breadth['note']
+    assert '50일 AAA' in breadth['note'] and '200일 AAA' in breadth['note']
 
     provider = FakePublicData()
     provider.universe = lambda: SimpleNamespace(
@@ -1058,3 +1058,35 @@ def test_low_value_headlines_are_excluded_summarized_and_articles_render_as_rows
     article = next(r for r in result['evidence'] if r['label'] == 'Confirmed catalyst')
     assert f"| {article['id']} | 11-12 18:00 | [Confirmed catalyst](<https://example.com/news>) |" in markdown
     assert f"### {article['id']} Confirmed catalyst" not in markdown
+
+
+def test_header_times_render_in_eastern_time_and_none_found_cells_say_so():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-13T09:32:00-05:00')
+    provider.news = lambda symbol: []
+    report = mr.collect_report(provider, provider.now)
+    markdown = mr.render_markdown(report)
+    assert '기준: 2026-11-12 20:00 ET · 정규장 폐장: 2026-11-12 16:00 ET' in markdown
+    assert '생성: 2026-11-13 09:32 ET' in markdown and '다음 정규장 개장(2026-11-13 09:30 ET)' in markdown
+    assert report['window']['close'].endswith('+00:00')  # evidence keeps ISO with a zone
+    item = next(r for r in report['evidence'] if r['label'] == 'AAPL 뉴스')
+    block = markdown.split(f"### {item['id']} AAPL 뉴스", 1)[1].split('###', 1)[0]
+    assert '해당 없음' in block and '확인 불가' not in block.split('출처:')[0]
+
+
+def test_breadth_note_lists_short_history_names_and_truncates_past_ten(monkeypatch):
+    provider = FakePublicData()
+    tickers = tuple(f'N{i:02}' for i in range(12))
+    provider.universe = lambda: SimpleNamespace(tickers=tickers, source='https://example.com/members',
+                                                as_of='2026-11-01', as_of_label='membership as of')
+    original = provider.daily
+
+    def daily(symbol, day):
+        frame = original(symbol, day)
+        return frame.iloc[-30:] if symbol in tickers else frame  # 30 sessions: short for 50 and 200
+
+    provider.daily = daily
+    breadth = next(r for r in mr.collect_report(provider, provider.now)['evidence']
+                   if r['section'] == '시장 폭·참여도' and 'constituents' in (r['value'] or {}))
+    assert '50일 N00, N01' in breadth['note'] and '외 2개' in breadth['note']
+    assert 'N11' not in breadth['note']

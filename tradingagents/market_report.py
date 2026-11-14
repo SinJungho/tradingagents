@@ -288,12 +288,10 @@ def collect_report(provider=None, now=None):
                 excluded.append(symbol)
         stats = breadth_stats(members)
         short_history_excluded = {
-            period: sum(
-                history_metadata.get(symbol, {}).get('close_source') != 'unavailable'
-                and not (len(history) >= max(2, period)
-                         and history.iloc[-max(2, period):].notna().all())
-                for symbol, history in members.items()
-            )
+            period: [symbol for symbol, history in members.items()
+                     if history_metadata.get(symbol, {}).get('close_source') != 'unavailable'
+                     and not (len(history) >= max(2, period)
+                              and history.iloc[-max(2, period):].notna().all())]
             for period in (1, 50, 200)
         }
         spy_proxy = universe.source == SPY_HOLDINGS_SOURCE
@@ -306,9 +304,9 @@ def collect_report(provider=None, now=None):
                            else 'Wikipedia 현재 구성표 대체 자료; 구성 기준일 미확인' if wikipedia_fallback else None)
         notes = [membership_note] if membership_note else []
         if any(short_history_excluded.values()):
-            notes.append('이력 부족 종목은 해당 구간 분모에서 제외; 제외 수: '
-                         + ', '.join(f'{period}일 {short_history_excluded[period]}개'
-                                     for period in (1, 50, 200) if short_history_excluded[period]))
+            notes.append('이력 부족 종목은 해당 구간 분모에서 제외: ' + ' · '.join(
+                f"{period}일 {', '.join(names[:10])}" + (f' 외 {len(names) - 10}개' if len(names) > 10 else '')
+                for period, names in short_history_excluded.items() if names))
         limitations = []
         if unavailable_symbols:
             limitations.append(f'시세 조회 실패 종목: {", ".join(unavailable_symbols)}')
@@ -770,6 +768,10 @@ def cell(value):
     return re.sub(r'([\\`*{}\[\]()#+.!_<>])', r'\\\1', str(value)).replace('|', '\\|').replace('\n', ' ')
 
 
+def _et(iso):
+    return pd.Timestamp(iso).tz_convert(ET).strftime('%Y-%m-%d %H:%M ET')
+
+
 def render_markdown(report):
     warnings = quality_warnings(report)
     window = report['window']
@@ -791,9 +793,9 @@ def render_markdown(report):
                          + (f' — {cell(detail)}' if detail else ''))
     lines = [f"# 미국 시장 보고서 — {window['day']}", '',
              f"**{'불완전 보고서' if warnings else '수집 범위 내 보고서'}**", '',
-             f"대상 거래일: {window['day']} · 기준: {window['cutoff']} · 정규장 폐장: {window['close']}",
-             f"생성: {window['generated_at']} · 다음 거래일: {window['next_day']}", '',
-             *([f"주의: 다음 정규장 개장({window['next_open']}) 이후 생성되어 공급자의 장후 5분 봉과 최신 뉴스 범위가 줄었을 수 있습니다.", '']
+             f"대상 거래일: {window['day']} · 기준: {_et(window['cutoff'])} · 정규장 폐장: {_et(window['close'])}",
+             f"생성: {_et(window['generated_at'])} · 다음 거래일: {window['next_day']}", '',
+             *([f"주의: 다음 정규장 개장({_et(window['next_open'])}) 이후 생성되어 공급자의 장후 5분 봉과 최신 뉴스 범위가 줄었을 수 있습니다.", '']
                if window.get('late_generation') else []),
              (f"자료 상태: 확인 {status_counts['available']} · 해당 없음 {status_counts['none_found']} · "
               f"부분 {status_counts['partial']} · "
@@ -835,7 +837,7 @@ def render_markdown(report):
                     lines += ['| 항목 | 값 |', '| --- | ---: |']
                     lines += [f'| {cell(LABELS.get(k, k))} | {cell(v)} |' for k, v in item['value'].items()]
                 else:
-                    lines += [cell(item['value'])]
+                    lines += ['해당 없음' if item['status'] == 'none_found' else cell(item['value'])]
                 source = item['source']
                 source_urls = item.get('sources') if section == '다음 거래일' else None
                 if source_urls:
