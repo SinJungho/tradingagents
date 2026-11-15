@@ -34,10 +34,9 @@ def market_cap_snapshot() -> tuple[dict[str, int], str]:
                 sortField="ticker",
                 sortAsc=True,
             ))
-        except Exception as exc:
-            raise VendorUnavailableError(
-                f"Yahoo market-cap screener failed ({type(exc).__name__})"
-            ) from None
+        except VendorUnavailableError as exc:
+            # yf_retry's errors carry fixed, credential-free text; keep it as the cause.
+            raise VendorUnavailableError(f"page at offset {offset}: {exc}") from None
         quotes = page.get("quotes") if isinstance(page, dict) else None
         page_total = page.get("total") if isinstance(page, dict) else None
         if not isinstance(quotes, list) or type(page_total) is not int or page_total <= 0:

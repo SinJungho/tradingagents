@@ -580,3 +580,14 @@ def test_market_cap_screener_queries_listed_exchanges_and_refuses_past_paging_li
     text = str(queries[0].to_dict())
     assert "'region', 'us'" in text and all(f"'exchange', '{code}'" in text for code in yahoo_screener.LISTED_EXCHANGES)
     assert "PNK" not in text  # OTC stays outside the listing universe
+
+
+@pytest.mark.unit
+def test_market_cap_screener_failure_keeps_its_cause(monkeypatch):
+    from yfinance.exceptions import YFRateLimitError
+
+    monkeypatch.setattr(yahoo_screener.yf, "screen", Mock(side_effect=YFRateLimitError()))
+    monkeypatch.setattr("tradingagents.dataflows.vendors.yahoo.common.time.sleep", lambda _s: None)
+    with pytest.raises(stock_discovery.MarketUniverseError,
+                       match="screener failed: page at offset 0: Yahoo Finance rate limited after 3 retries"):
+        stock_discovery.fetch_market_cap_snapshot()
