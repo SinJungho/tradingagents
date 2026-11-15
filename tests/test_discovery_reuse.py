@@ -207,7 +207,29 @@ def test_parallel_sec_prefetch_loads_company_index_once_and_keeps_failure_order(
     monkeypatch.setattr(sd, 'get_splits', splits)
     monkeypatch.setattr(sd, 'get_current_date', lambda: '2026-11-12')
     result = sd._score_tickers(('OK', 'BROKEN', 'OK'))
-    assert sorted(seen) == ['BROKEN', 'OK'] and result.calls['sec'] == 2
+    # BROKEN's transient SEC failure is asked once more; the reported call count stays per symbol.
+    assert sorted(seen) == ['BROKEN', 'BROKEN', 'OK'] and result.calls['sec'] == 2
     assert [entry.ticker for entry in result.tickers] == ['OK', 'BROKEN', 'OK']
     assert [f.source for f in result.failures] == [
         'Yahoo Finance price history', 'SEC EDGAR annual facts', 'Yahoo Finance split history']
+
+
+def test_transient_provider_failures_are_asked_once_more_but_no_data_is_not(monkeypatch):
+    from tradingagents.dataflows.errors import NoMarketDataError
+
+    attempts = {}
+
+    def splits(symbol):
+        attempts[symbol] = attempts.get(symbol, 0) + 1
+        if symbol == 'FLAKY' and attempts[symbol] == 1:
+            raise VendorUnavailableError('Yahoo Finance rate limited after 3 retries')
+        if symbol == 'DOWN':
+            raise VendorUnavailableError('Yahoo Finance rate limited after 3 retries')
+        if symbol == 'NODATA':
+            raise NoMarketDataError(symbol, symbol, 'no split rows')
+        return pd.Series(dtype=float)
+
+    results, _ = sd._prefetch(splits, ['OK', 'FLAKY', 'DOWN', 'NODATA'])
+    assert attempts == {'OK': 1, 'FLAKY': 2, 'DOWN': 2, 'NODATA': 1}
+    assert results['FLAKY'][1] is None and isinstance(results['DOWN'][1], VendorUnavailableError)
+    assert isinstance(results['NODATA'][1], NoMarketDataError)

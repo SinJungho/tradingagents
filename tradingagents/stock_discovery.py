@@ -20,7 +20,7 @@ import requests
 
 from tradingagents import __version__
 from tradingagents.dataflows.date_window import get_current_date
-from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.net import get_with_retry
 from tradingagents.dataflows.vendors.sec_edgar import company_index_session
 from tradingagents.dataflows.vendors.yahoo.market import get_splits
@@ -769,9 +769,8 @@ def fetch_market_cap_snapshot() -> tuple[dict[str, int], str]:
     try:
         return market_cap_snapshot()
     except Exception as exc:
-        raise MarketUniverseError(
-            f"Yahoo market-cap screener failed ({type(exc).__name__})"
-        ) from None
+        # Vendor errors carry fixed text; keep the cause (e.g. the paging limit), not just the type.
+        raise MarketUniverseError(f"Yahoo market-cap screener failed: {exc}") from None
 
 
 def fetch_index_universe(key: str) -> DiscoveryUniverse:
@@ -962,10 +961,18 @@ def _prefetch(fetch: Callable[[str], object], symbols: list[str]) -> tuple[dict,
     """Call ``fetch`` once per symbol on a bounded pool; SEC requests share sec_edgar's rate limit."""
     stage = perf_counter()
     # Pool threads do not inherit context variables; carry the run's SEC company-index session.
-    contexts = [copy_context() for _ in symbols]
-    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
-        outcomes = pool.map(lambda pair: pair[0].run(_attempt, fetch, pair[1]), zip(contexts, symbols, strict=True))
-        results = dict(zip(symbols, outcomes, strict=True))
+    def run(batch):
+        contexts = [copy_context() for _ in batch]
+        with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+            outcomes = pool.map(lambda pair: pair[0].run(_attempt, fetch, pair[1]), zip(contexts, batch, strict=True))
+            return dict(zip(batch, outcomes, strict=True))
+
+    results = run(symbols)
+    # A whole-market run leaves ~4% of symbols with exhausted 429 retries; by the end of the
+    # first pass the shared Yahoo pace has widened, so ask those once more.
+    transient = [s for s, (_, error) in results.items() if isinstance(error, VendorUnavailableError)]
+    if transient:
+        results.update(run(transient))
     return results, perf_counter() - stage
 
 

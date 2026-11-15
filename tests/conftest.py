@@ -97,6 +97,16 @@ def _no_network(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_yahoo_pace(monkeypatch):
+    """Yahoo pacing is process-wide and real-time; tests start unpaced and isolated."""
+    from tradingagents.dataflows.vendors.yahoo import common
+
+    monkeypatch.setattr(common, "_MIN_INTERVAL", 0.0)
+    monkeypatch.setattr(common, "_interval", 0.0)
+    monkeypatch.setattr(common, "_next_call_at", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _at_a_terminal(monkeypatch):
     """Tests of the interactive steps run as if at a terminal; pytest's stdin is
     not one. A test of an unattended run sets isatty to False itself."""
