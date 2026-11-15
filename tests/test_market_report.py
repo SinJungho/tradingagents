@@ -1138,3 +1138,26 @@ def test_friday_futures_are_judged_against_the_weekend_halt():
     rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence'] if r['section'] == '장후'}
     assert rows['ES=F S&P 500 선물']['status'] == 'available'  # observed 16:35, within 30 min of 17:00
     assert rows['AAPL 대형주 표본']['status'] == 'stale'       # stocks keep the 20:00 reference
+
+
+def test_early_close_day_judges_futures_and_stocks_against_their_real_stop():
+    provider = FakePublicData()
+    provider.now = datetime.fromisoformat('2026-11-27T20:30:00-05:00')  # NYSE closes 13:00 ET
+
+    def bars(times):
+        return lambda symbol, day: pd.DataFrame(
+            {'Close': [100.] * len(times)},
+            index=pd.DatetimeIndex([f'{day} {h}' for h in times], tz=mr.ET))
+
+    provider.intraday = lambda symbol, day: (bars(('12:55', '13:05'))(symbol, day) if symbol.endswith('=F')
+                                             else bars(('12:55', '16:50'))(symbol, day))
+    report = mr.collect_report(provider, provider.now)
+    assert report['window']['close'].startswith('2026-11-27T18:00')  # 13:00 ET
+    rows = {r['label']: r for r in report['evidence'] if r['section'] == '장후'}
+    assert rows['ES=F S&P 500 선물']['status'] != 'stale' and '조기 폐장일 선물' in rows['ES=F S&P 500 선물']['note']
+    assert rows['AAPL 대형주 표본']['status'] != 'stale' and '시간외 거래 17:00' in rows['AAPL 대형주 표본']['note']
+
+    provider.intraday = bars(('12:55', '13:25'))  # everything stops at 13:30
+    rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence'] if r['section'] == '장후'}
+    assert rows['ES=F S&P 500 선물']['status'] != 'stale'
+    assert rows['AAPL 대형주 표본']['status'] == 'stale'  # 13:30 is far from the 17:00 extended-hours end
