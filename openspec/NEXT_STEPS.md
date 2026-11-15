@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-- 브랜치·PR: `work/local-improvements`는 fork(`SinJungho/tradingagents`)에 푸시돼 있다. PR #1·#2는 `main`에 병합됐고, 그 뒤 작업은 `main` 대상 PR #3(27커밋, 충돌 없음)으로 열려 있다.
+- 브랜치·PR: `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1·#2·#3으로 모두 `main`에 병합됐다(PR #3: 2026-11-15, merge commit `5a50b7e`). 열린 PR은 없다.
 - OpenSpec: 진행 중인 변경안이 없다. 마지막 활성 변경안이던 Polymarket 네트워크 검증은 E3(2026-11-15 집 네트워크, 별칭·direct 모두 GET 성공)를 마치고 아카이브했다.
 - 최근 검증: pytest 1,849 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 16개 통과.
 - 시장 보고서
@@ -25,11 +25,10 @@
 
 | 순서 | 작업 | 이유와 방법 | 규모 |
 | --- | --- | --- | --- |
-| 1 | PR #3 검토·병합 | 문서 최신화, 보고서 표기, Yahoo 속도 제한, 시총 스크리너, 장후 판정, E3 기록이 들어 있다. https://github.com/SinJungho/tradingagents/pull/3 | 중간 |
-| 2 | `SEC_EDGAR_USER_AGENT`에 실제 연락처 설정 | SEC·BLS 요청은 연락처가 든 User-Agent를 요구한다. 설정이 없으면 자리표시자 `contact@example.com`을 보낸다. `.env`에 `SEC_EDGAR_USER_AGENT="이름 이메일"`을 직접 넣는다(에이전트는 `.env`를 열람하지 않는다). | 작음 |
-| 3 | Orca에서 `orca.yaml` setup 승인 | Orca는 setup 내용이 바뀌면 승인 전까지 건너뛴다. 다음 워크트리 생성 때 승인하거나 `--setup run`을 쓴다. | 작음 |
-| 4 | 재현성 확인 2·3일 차 시간대 확보 | 세션이 대기 상태여야 예약 작업이 실행된다. 세션을 닫았다면 한국시간 11-17·11-18 오전 10시~오후 11시 30분에 직접 요청한다. | 작음 |
-| 5 | 마지막 실제 LLM 평가 승인 | 3일 차 결과가 나온 뒤 1회 실제 LLM 보고서 평가를 할지 결정한다(LLM 비용). | 작음 |
+| 1 | `SEC_EDGAR_USER_AGENT`에 실제 연락처 설정 | SEC·BLS 요청은 연락처가 든 User-Agent를 요구한다. 설정이 없으면 자리표시자 `contact@example.com`을 보낸다. `.env`에 `SEC_EDGAR_USER_AGENT="이름 이메일"`을 직접 넣는다(에이전트는 `.env`를 열람하지 않는다). | 작음 |
+| 2 | Orca에서 `orca.yaml` setup 승인 | Orca는 setup 내용이 바뀌면 승인 전까지 건너뛴다. 다음 워크트리 생성 때 승인하거나 `--setup run`을 쓴다. | 작음 |
+| 3 | 재현성 확인 2·3일 차 시간대 확보 | 세션이 대기 상태여야 예약 작업이 실행된다. 세션을 닫았다면 한국시간 11-17·11-18 오전 10시~오후 11시 30분에 직접 요청한다. | 작음 |
+| 4 | 마지막 실제 LLM 평가 승인 | 3일 차 결과가 나온 뒤 1회 실제 LLM 보고서 평가를 할지 결정한다(LLM 비용). | 작음 |
 
 ## 우선순위
 
