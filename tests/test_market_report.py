@@ -1161,3 +1161,38 @@ def test_early_close_day_judges_futures_and_stocks_against_their_real_stop():
     rows = {r['label']: r for r in mr.collect_report(provider, provider.now)['evidence'] if r['section'] == '장후'}
     assert rows['ES=F S&P 500 선물']['status'] != 'stale'
     assert rows['AAPL 대형주 표본']['status'] == 'stale'  # 13:30 is far from the 17:00 extended-hours end
+
+
+def test_narrative_retries_once_with_the_reason_and_never_echoes_the_response(report):
+    valid = report['evidence'][0]['id']
+    bad = json.dumps([{'section': '핵심 요약', 'text': '지수가 2% 하락했다 SECRET-ECHO', 'evidence_ids': [valid]}])
+    good = json.dumps([{'section': '핵심 요약', 'text': '지수가 하락했다.', 'evidence_ids': [valid]}])
+    llm = Mock(invoke=Mock(side_effect=[SimpleNamespace(content=bad), SimpleNamespace(content=good)]))
+    mr.write_narrative(report, llm=llm)
+    assert report['llm_status'] == 'available' and 'narrative_rejected' not in report
+    assert report['narrative'][0]['text'] == '지수가 하락했다.'
+    assert report['narrative_rejections'] == ['해석 1: 수치 포함']
+    retry_messages = llm.invoke.call_args_list[1].args[0]
+    assert retry_messages[:-1] == llm.invoke.call_args_list[0].args[0]
+    assert '해석 1: 수치 포함' in retry_messages[-1][1]
+    assert 'SECRET-ECHO' not in json.dumps(retry_messages, ensure_ascii=False)
+    assert not any('LLM' in w for w in mr.quality_warnings(report))
+
+
+def test_narrative_rejected_twice_is_dropped_with_both_reasons(report):
+    llm = Mock(invoke=Mock(side_effect=[
+        SimpleNamespace(content='not json'),
+        SimpleNamespace(content=json.dumps([{'section': '핵심 요약', 'text': '해석', 'evidence_ids': ['E9999']}])),
+    ]))
+    mr.write_narrative(report, llm=llm)
+    assert llm.invoke.call_count == 2
+    assert report['llm_status'] == 'failed' and report['narrative_rejected'] and not report['narrative']
+    assert report['narrative_rejections'] == ['JSON 형식 아님', '해석 1: 없는 근거 ID']
+    assert any('근거 연결' in w for w in mr.quality_warnings(report))
+
+
+def test_narrative_call_error_is_not_retried(report):
+    llm = Mock(invoke=Mock(side_effect=RuntimeError('network down')))
+    mr.write_narrative(report, llm=llm)
+    assert llm.invoke.call_count == 1
+    assert report['llm_status'] == 'failed' and 'narrative_rejections' not in report
