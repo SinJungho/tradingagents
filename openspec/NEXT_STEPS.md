@@ -1,11 +1,11 @@
 # 후속 작업 목록
 
-최종 갱신: 2026-11-15 (오후)
+최종 갱신: 2026-11-15 (밤)
 
 ## 현재 상태
 
 - 브랜치 `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1로 `main`에 병합됐다(2026-11-14, merge commit `24f35ab`).
-- 진행 중인 OpenSpec 변경안은 `2026-11-13-polymarket-network-verification` 하나이며 E3 집 네트워크 검증만 남았다.
+- 진행 중인 OpenSpec 변경안은 없다. Polymarket E3 집 네트워크 검증을 2026-11-15에 마쳐(별칭·direct 모두 GET 성공) 변경안을 아카이브했다.
 - 최근 검증: pytest 1,849 passed, 1 skipped, 103 subtests; Ruff 통과; OpenSpec strict 17개 통과.
 - 시장 보고서: 실제 LLM 재평가(Red 64, Blue 78; 이전 52, 73)의 지적을 고쳤다. 뉴스 50건 조회와 공급자 한도 표시, 금리 관측일 불일치 비고, DXY(ICE DXY) 라벨, 핵심 요약의 최대 변동 포함, 지수 이름 숫자의 해석 검사 제외. 기록: `results/market-reports/2026-11-12-a80efcde3994475289e8c78f4777e5ea/quality-review.md`.
 - 재평가 후속(2026-11-13): 다음 정규장 개장 이후 생성 시 머리말 주의, DXY·WTI·금의 직전 거래일 대비 변화율, ETF 보유 변동·애널리스트 의견 틀 헤드라인 제외(제목은 요약 항목에 보존)와 기사 표 렌더링. 실제 실행에서 보고서가 2,292줄에서 1,124줄로 줄었다.
@@ -27,8 +27,7 @@
 | --- | --- | --- | --- |
 | 1 | `SEC_EDGAR_USER_AGENT`에 실제 연락처 설정 | SEC·BLS 요청은 연락처가 든 User-Agent를 요구한다. 설정이 없으면 자리표시자 `contact@example.com`을 보낸다. `.env`에 `SEC_EDGAR_USER_AGENT="이름 이메일"` 형식으로 직접 넣는다(에이전트는 `.env`를 열람하지 않는다). | 작음 |
 | 2 | Orca에서 `orca.yaml` setup 승인 | Orca는 setup 내용이 바뀌면 승인 전까지 건너뛴다. 다음 워크트리 생성 때 승인하거나 `--setup run`을 쓴다. | 작음 |
-| 3 | 집 네트워크에서 E3 검증 요청 | 집 네트워크에 연결된 상태에서 에이전트에게 E3 진행을 요청한다. 에이전트가 `tradingagents doctor`와 Polymarket 공개 검색 GET(별칭·direct)을 실행해 상태·파싱·시각을 기록하고 변경안을 마무리한다. | 작음 |
-| 4 | Russell 2000 출처 재확인 요청(가끔) | iShares IWM 보유 종목이 CSV로 돌아왔는지 에이전트에게 확인을 요청한다. 복구 전까지 `discover --universe russell2000`은 실패한다. | 작음 |
+| 3 | Russell 2000 출처 재확인 요청(가끔) | iShares IWM 보유 종목이 CSV로 돌아왔는지 에이전트에게 확인을 요청한다. 복구 전까지 `discover --universe russell2000`은 실패한다. | 작음 |
 
 ## 우선순위
 
@@ -36,8 +35,7 @@
 | --- | --- | --- | --- | --- |
 | 1 | 여러 거래일 재현성 확인(2·3일 차) | 1일 차(2026-11-13 대상) 기록: `results/market-reports/2026-11-13-e986363a3f9b40d19b0ba87846b6bcd0/quality-review.md`. 이 세션에 2일 차(11-17 10:23 KST, 11-16 대상)·3일 차(11-18 10:23 KST, 11-17 대상) `--no-llm` 실행을 예약했다(세션 종료 시 사라짐). 마지막 실제 LLM 평가는 비용 승인 후 진행한다. | 중간 | LLM 비용 |
 | 주기 확인 | Russell 2000 출처 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(2026-11-15 21:05 KST 재확인: 기본·기준일 지정·JSON 형식 모두 HTML, 경로 축약은 404). Vanguard·SSGA·FTSE Russell 무료 대체 없음. | 작음 | 유료 출처는 범위 밖 |
-| 대기 | E3 집 네트워크 Polymarket 공개 GET 검증 | 활성 변경안의 마지막 미완료 작업. 집 네트워크 접근 불가. | 작음 | 환경이 가능해진 뒤 실행 |
 
 ## 다음 시작점
 
-예약된 2·3일 차 재현성 확인이 다음 작업이다. 세션이 그 전에 끝나면 같은 시간대(한국시간 11-17·11-18 오전 10시~오후 11시 30분)에 직접 요청한다. Russell 2000 출처는 주기적으로 재확인하고, E3는 집 네트워크 접근이 가능해지면 재개한다.
+예약된 2·3일 차 재현성 확인이 다음 작업이다. 세션이 그 전에 끝나면 같은 시간대(한국시간 11-17·11-18 오전 10시~오후 11시 30분)에 직접 요청한다. Russell 2000 출처는 주기적으로 재확인한다.
