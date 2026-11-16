@@ -7,10 +7,11 @@ description: 저장소 상태와 OpenSpec 기록을 근거로 후속 작업을 �
 
 ## 1. 근거 수집 (추측하지 않는다)
 
-- `git status --short`, `git log --oneline -10`: 커밋되지 않은 변경, push 여부
+- `openspec/NEXT_STEPS.md`: 현재 상태, 사용자 작업, 우선순위 표, 다음 시작점. 기록 날짜가 지났으면 각 항목이 아직 유효한지 다시 확인한다(예: 출처 복구 여부, 예약 작업 실행 여부)
+- `git status --short`, `git log --oneline -10`, `git rev-list --count origin/main..HEAD`: 커밋되지 않은 변경, push 여부, `main`에 아직 없는 커밋. fork 저장소이므로 `upstream`이 아니라 `origin`(fork) 기준으로 본다
 - `openspec/changes/`: 진행 중인 변경과 `tasks.md`의 미완료 항목
 - 최근 아카이브 `openspec/changes/archive/*/` 의 `README.md`·`proposal.md` Out of Scope: 미뤄 둔 일과 한계
-- `AGENTS.md`의 요청 유형 표에서 "Not implemented"인 기능
+- 최근 실제 실행 기록: `results/market-reports/*/quality-review.md`, 실측 수치가 담긴 아카이브 README
 - 테스트·Ruff 상태(최근 실행 결과가 없으면 실행)
 
 ## 2. 분류와 우선순위
@@ -23,3 +24,10 @@ description: 저장소 상태와 OpenSpec 기록을 근거로 후속 작업을 �
 ## 3. 형식
 
 항목마다 한 줄 요약, 근거(파일·커밋·결과), 규모(작음/중간/큼), 사용자 결정이 필요한지(예: 유료 데이터 공급자)를 적는다. 제안은 5개 안팎으로 줄이고, 마지막에 바로 진행할 항목을 하나 추천한다. 선택된 항목은 `openspec-change` skill로 진행한다.
+
+- 에이전트가 할 일과 사용자가 해야 할 일(결정·설정·환경)을 나눠 보여준다.
+- 특정 시각·환경이 필요한 일(예: 장 마감 뒤 실행, 집 네트워크)은 가능한 시점을 함께 적는다.
+
+## 4. 기록
+
+"최신화" 요청이거나 목록이 바뀌었으면 `openspec/NEXT_STEPS.md`를 고친다: 최종 갱신일, 현재 상태(브랜치·PR·검증 수치), 사용자 작업 표, 우선순위 표, 다음 시작점. 끝난 항목은 지우고 결과는 현재 상태로 옮긴다. 확인하지 않은 내용을 사실처럼 적지 않는다. 사용자가 요청하면 커밋하고 fork `origin`에만 푸시한다.

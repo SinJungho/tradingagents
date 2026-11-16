@@ -23,6 +23,9 @@ Codex의 새 워커 세션은 시작 hook을 Codex에서 한 번 신뢰한 뒤 `
 | 호스트 도달 실패 | `network-policy` 결과에 맞춘 워커 호스트 DNS 및 목적지/포트 egress 정책, 프록시·VPN |
 | HTTP 401/403 | 키 종류(API 키 vs 다른 제품 키), 플랜·권한, 허용 IP 등록 |
 | HTTP 429 / timeout | 공급자 rate limit(rpm)에 맞춰 동시성·재시도·timeout 조정. 설정 변경은 OpenSpec 변경으로 진행 |
+| SEC·BLS HTTP 403 | User-Agent에 연락처(이메일)가 없으면 거부된다. `SEC_EDGAR_USER_AGENT`에 "이름 이메일" 형식을 설정했는지 확인한다(설정이 없으면 자리표시자 주소가 나간다). 2026-11-15 확인: 이메일이 있으면 200, 이름만 있으면 403 |
+| Yahoo 429·응답 지연 | Yahoo 호출은 프로세스 안에서 자동으로 간격을 넓힌다. 같은 IP에서 `discover --universe all`을 하루 여러 번 실행하면 429 대신 응답 지연이 누적된다(2026-11-15 관찰). 전체 시장 실행은 하루 한 번 정도로 두고, 다른 Yahoo 실행과 동시에 돌리지 않는다 |
+| Polymarket 연결 실패 | 기본 경로는 CloudFront 별칭이다. `doctor`의 HEAD 결과는 검색 GET 성공을 뜻하지 않는다. 네트워크에 따라 `TRADINGAGENTS_POLYMARKET_TRANSPORT=direct` 또는 `cloudfront_alias`를 명시한다. TLS 검증·리다이렉트 거부는 완화하지 않는다 |
 
 ## 3. 보고 원칙
 
