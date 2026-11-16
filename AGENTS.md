@@ -31,7 +31,7 @@ Classify each research request into one type and follow its flow. Repeat request
 
 ## Agent skills
 
-- Repeated workflows live in `.agents/skills/` (Codex reads it directly; `.claude/skills` is a symlink to it for Claude Code): `portfolio-check`, `stock-scenario`, `market-report`, `backtest-eval`, `api-doctor`, `model-selection`, `openspec-change`, `next-steps`, `reference-research`. Update a skill when its workflow changes, and keep the rules above authoritative.
+- Repeated workflows live in `.agents/skills/` (Codex reads it directly; `.claude/skills` is a symlink to it for Claude Code): `portfolio-check`, `stock-scenario`, `stock-discovery`, `market-report`, `backtest-eval`, `api-doctor`, `model-selection`, `openspec-change`, `next-steps`, `reference-research`, `data-source-check`, `fork-release`. Update a skill when its workflow changes, and keep the rules above authoritative.
 
 ## Agent hooks
 

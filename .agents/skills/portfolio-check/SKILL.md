@@ -19,10 +19,13 @@ description: 토스 계좌 보유 현황을 읽기 전용으로 조회해 포트
 다른 명령과 묶지 않은 단독 명령으로 실행한다(Codex rules가 사용자 확인을 받는 형태).
 
 ```bash
-tradingagents portfolio live                      # 일반 요약
+tradingagents portfolio live --no-scenarios       # 보유 조회만(LLM 없음)
+tradingagents portfolio live                      # 일반 요약과 시나리오
 tradingagents portfolio live --full-workflow      # 심층
 tradingagents portfolio live --symbol TQQQ        # 특정 보유·관심 종목만 분석
 ```
+
+- "보유 종목 조회", "계좌 내역 확인"처럼 분석을 요청하지 않았으면 `--no-scenarios`로 LLM 없이 조회만 한다.
 
 주문 내역 기간이 필요하면 `--orders-from/--orders-to`(최대 90일)를 쓴다. 보고서는 `~/.tradingagents/portfolio/portfolio_live_<시각>.{json,md}`에 저장된다.
 
@@ -33,10 +36,12 @@ tradingagents portfolio live --symbol TQQQ        # 특정 보유·관심 종목
 1. 자료 기준 시각과 조회 시각, 누락·실패한 자료(미확인으로 표시, 0으로 채우지 않음)
 2. 보유 요약: 통화별 평가액, 비중 상위, 손익률, 일간 손익
 3. 위험 신호: 집중도, 변동성·기술 지표, 이전 스냅샷 대비 평가액 변화
-4. 종목별 조건부 시나리오(심층이면 Trader·Risk·Portfolio Manager 결정 포함)
+4. 종목별 조건부 시나리오: 단기(기본 1~20거래일)·중기(1~6개월)·장기(6~24개월) × 상승·기본·하락. 각 시나리오의 논리, 촉매, 관찰·검토·무효화 조건, 포트폴리오 영향을 옮긴다(심층이면 Trader·Risk·Portfolio Manager 결정 포함).
+5. 실패와 미확인: 종목 조사·시나리오 종합 API 실패와 선택 자료(거시 지표, 예측시장 등) 실패를 보고서의 오류 범주·재시도 가능 여부·횟수 그대로 전한다.
 
 - 계좌 식별자, 원시 응답, 개별 거래 행은 답변에 옮기지 않는다.
 - 계산 근거 없는 목표가·목표 수익률은 쓰지 않는다.
+- 거래 표현은 실제 보유 상태에 맞춘다(보유: 추가·유지·축소·청산, 관심종목: 신규 진입).
 - 사용자가 "정확히 조회했는지" 확인을 원하면 종목별 수량·평균가·평가액 표를 보고서 그대로 보여준다.
 
 자세한 옵션과 보고서 구조: `docs/portfolio-analysis.md`.
