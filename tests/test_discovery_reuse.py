@@ -233,3 +233,48 @@ def test_transient_provider_failures_are_asked_once_more_but_no_data_is_not(monk
     assert attempts == {'OK': 1, 'FLAKY': 2, 'DOWN': 2, 'NODATA': 1}
     assert results['FLAKY'][1] is None and isinstance(results['DOWN'][1], VendorUnavailableError)
     assert isinstance(results['NODATA'][1], NoMarketDataError)
+
+
+def _http_error(status):
+    """The shape get_with_retry raises: no raw response, status on the error itself."""
+    import requests
+
+    error = requests.HTTPError(f'HTTPError: synthetic {status}')
+    error.status_code = status
+    return error
+
+
+def test_sec_companyfacts_404_is_no_data_and_not_asked_again(monkeypatch, tmp_path):
+    from tradingagents.dataflows.errors import NoMarketDataError
+
+    requests_made = []
+
+    def get(url, **_kwargs):
+        requests_made.append(url)
+        raise _http_error(404)
+
+    monkeypatch.setattr(sec_edgar, 'get_config', lambda: {'data_cache_dir': str(tmp_path)})
+    monkeypatch.setattr(sec_edgar, 'get_with_retry', get)
+    monkeypatch.setattr(sec_edgar, 'cik_for', lambda ticker: '0001826836')
+    monkeypatch.setattr(sec_edgar, '_next_request_at', 0.0)
+    with pytest.raises(NoMarketDataError, match='no XBRL company facts'):
+        sec_edgar.get_annual_facts('AYA', ('Revenue',), '2026-11-15')
+
+    history = pd.Series(range(1, 301), index=pd.bdate_range(end='2026-11-12', periods=300), dtype=float)
+    monkeypatch.setattr(sd, '_closes', lambda *_: history)
+    monkeypatch.setattr(sd, 'get_splits', lambda *_: pd.Series(dtype=float))
+    monkeypatch.setattr(sd, 'get_current_date', lambda: '2026-11-12')
+    requests_made.clear()
+    result = sd._score_tickers(('AYA',))
+    assert result.failures == ()  # no data, not a provider failure
+    assert len(requests_made) == 1  # and not asked again in the transient pass
+    assert result.tickers[0].scores['value'].signal == sd.StyleSignal.ABSTAIN
+
+
+def test_sec_server_error_stays_a_transient_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(sec_edgar, 'get_config', lambda: {'data_cache_dir': str(tmp_path)})
+    monkeypatch.setattr(sec_edgar, 'get_with_retry', Mock(side_effect=_http_error(503)))
+    monkeypatch.setattr(sec_edgar, '_next_request_at', 0.0)
+    with pytest.raises(VendorUnavailableError) as raised:
+        sec_edgar._fetch_json('https://data.sec.gov/api/xbrl/companyfacts/CIK0000000001.json')
+    assert not isinstance(raised.value, sec_edgar.EdgarNotFound) and '503' in str(raised.value)

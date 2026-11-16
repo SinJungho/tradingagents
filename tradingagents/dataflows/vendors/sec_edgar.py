@@ -126,6 +126,10 @@ def _wait_for_request_slot() -> None:
         time.sleep(start - now)
 
 
+class EdgarNotFound(VendorUnavailableError):
+    """EDGAR answered 404: the document does not exist (e.g. a filer with no XBRL facts yet)."""
+
+
 def _fetch_json(url: str) -> dict:
     """Read a public EDGAR document, respecting SEC's identification and rate rules."""
     _wait_for_request_slot()
@@ -138,8 +142,11 @@ def _fetch_json(url: str) -> dict:
         )
         return response.json()
     except requests.RequestException as exc:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-        # Every failure here is "this vendor cannot serve it now", so the router
+        # get_with_retry re-raises without the raw response and puts the status on the error itself.
+        status = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+        if status == 404:
+            raise EdgarNotFound("SEC EDGAR has no such document (404)") from exc
+        # Every other failure here is "this vendor cannot serve it now", so the router
         # moves on instead of seeing a transport exception it has no rule for.
         raise VendorUnavailableError(f"SEC EDGAR request failed ({status or type(exc).__name__})") from exc
     except ValueError as exc:
@@ -247,13 +254,21 @@ def _as_of_facts(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tup
     return dict(sorted(values.items())), chosen_unit
 
 
+def _company_facts(ticker: str, cik: str) -> dict:
+    """The filer's XBRL company facts; a filer SEC has none for is no data, not a vendor outage."""
+    try:
+        return _cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json")
+    except EdgarNotFound:
+        raise NoMarketDataError(ticker, ticker, "US filer with no XBRL company facts") from None
+
+
 def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> str:
     as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
     cik = cik_for(ticker)
     if cik is None:
         raise NoMarketDataError(ticker, ticker, "not a US SEC filer")
 
-    facts = _cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json")
+    facts = _company_facts(ticker, cik)
     us_gaap = (facts.get("facts") or {}).get("us-gaap")
     if not us_gaap:
         raise NoMarketDataError(ticker, ticker, "US filer with no us-gaap facts")
@@ -339,8 +354,7 @@ def get_annual_facts(ticker: str, labels: tuple[str, ...], as_of_date: str) -> d
     cik = cik_for(ticker)
     if cik is None:
         raise NoMarketDataError(ticker, ticker, "not a US SEC filer")
-    us_gaap = ((_cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json").get("facts") or {})
-               .get("us-gaap"))
+    us_gaap = (_company_facts(ticker, cik).get("facts") or {}).get("us-gaap")
     if not us_gaap:
         raise NoMarketDataError(ticker, ticker, "US filer with no us-gaap facts")
     tags = {label: line_tags for lines in _STATEMENTS.values() for label, line_tags in lines}
