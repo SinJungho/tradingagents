@@ -1,0 +1,4 @@
+- [x] 순위별 12개 기술 분석을 보고서 생성기에 추가
+- [x] 합성 자료로 순위·관찰·해석·평가 불가 상태 검증
+- [x] 최신 GOOGL Markdown/HTML 보고서 재생성
+- [x] 집중 및 전체 검증, Ruff, CLI, OpenSpec strict 실행 후 아카이브

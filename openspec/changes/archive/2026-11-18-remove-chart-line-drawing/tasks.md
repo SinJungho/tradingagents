@@ -1,0 +1,6 @@
+- [x] 복구용 백업 생성·확인 (완료: results/_backup-line-drawing-removed-2026-11-18.tgz)
+- [x] technical-backtest 코드·테스트·CLI·스펙 제거
+- [x] chart-eval 실험(코드·테스트·CLI·OpenSpec 변경안) 제거
+- [x] 선 후보·구조선·피보나치·VWAP·시나리오·선 색과 구조 차트 제거, 문서·스킬 문구 정리
+- [x] 순위별 분석을 9개로 정리하고 판단 요약 페이지에서 선 관련 내용 제거
+- [x] GOOGL 보고서 재생성(추가 HTTP 없음)과 확인, 전체 pytest·ruff·CLI·OpenSpec 검증, 아카이브
