@@ -61,15 +61,17 @@ def test_env_files_are_off_limits(payload, expected):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("command, claude, codex", [
-    ("tradingagents portfolio live --symbol TQQQ", "ask", None),       # Codex: .codex/rules prompts
-    ("cd /repo && tradingagents portfolio live", "ask", "deny"),       # hidden from the rules
+    # Read-only `portfolio live` is pre-authorized, in any shape.
+    ("tradingagents portfolio live --symbol TQQQ", None, None),
+    ("cd /repo && tradingagents portfolio live", None, None),
+    ("DEBUG=1 /opt/repo/.venv/bin/tradingagents portfolio live", None, None),
     ("./.venv/bin/tradingagents backtest NVDA --start 2025-01-01 --end 2025-02-01", "ask", None),
     ("tradingagents --ticker NVDA --date 2026-11-10 | tee out", "ask", "deny"),
     ("tradingagents --ticker NVDA --date 2026-11-10", "ask", None),
     # Shapes the Codex prefix rules cannot see: a flag before --ticker, an absolute path, an env prefix.
     ("tradingagents --checkpoint --ticker NVDA", "ask", "deny"),
-    ("/opt/repo/.venv/bin/tradingagents portfolio live", "ask", "deny"),
-    ("DEBUG=1 tradingagents portfolio live", "ask", "deny"),
+    ("/opt/repo/.venv/bin/tradingagents backtest NVDA", "ask", "deny"),
+    ("DEBUG=1 tradingagents --ticker NVDA", "ask", "deny"),
     ("tradingagents market-report", "ask", None),
     ("cd /repo && tradingagents market-report", "ask", "deny"),
     ("tradingagents portfolio demo", None, None),

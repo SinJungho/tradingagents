@@ -33,6 +33,9 @@ description: 기능 추가·동작 변경을 OpenSpec 변경안 작성부터 구
 
 실행 결과(통과 수, skip 수)를 그대로 보고한다. 실데이터 평가가 필요한 변경은 결과와 한계를 변경 폴더의 `README.md`에 남긴다.
 
+- 외부 공급자(Yahoo·SEC·BLS·Census·FRED 등) 동작을 바꾼 변경은 합성 테스트 뒤 실제 공개 자료로 한 번 확인한다. 합성 테스트가 실제 예외·응답 형태와 다를 수 있다(예: `get_with_retry`는 원본 응답을 떼어 낸 예외에 `status_code`만 붙인다). LLM·브로커 실제 호출은 사용자 허용이 있을 때만 한다.
+- 실측은 조건(캐시 상태, 공급자 제한, 절전 여부)을 함께 적고, 조건이 다른 두 측정의 차이를 한 원인으로 단정하지 않는다.
+
 ## 5. 아카이브
 
 ```bash
@@ -51,7 +54,7 @@ npx --offline @fission-ai/openspec archive <name> --yes
 
 - Worker 워크트리는 커밋에서 갈라지므로 미커밋 변경은 전달되지 않는다. 시작 전에 기준 커밋을 만든다(사용자 승인 필요).
 - 같은 파일·같은 spec 요구사항을 두 Worker가 고치지 않게 나눈다. 겹치면 하나를 병합한 뒤 다음 Worker를 시작한다.
-- 워크트리 Python 환경: 저장소 루트 `orca.yaml`의 `scripts.setup`이 새 워크트리마다 자체 `.venv`(개발 도구 포함)를 만든다. Orca는 setup 내용이 바뀌면 승인 전까지 건너뛰므로, 워커를 띄울 때 `--setup run`을 주거나 Orca에서 승인한다(2026-11-13 확인: 시험 워크트리에서 `.venv` 생성·전체 pytest 통과). setup이 실행되지 않은 워크트리는 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인한다.
+- 워크트리 Python 환경: 저장소 루트 `orca.yaml`의 `scripts.setup`이 새 워크트리마다 자체 `.venv`(개발 도구 포함)를 만든다. 2026-11-15 확인: 기본 설정(`--setup inherit`)으로 만든 워크트리에서도 별도 승인 없이 실행됐다. setup 내용을 바꾼 직후에는 Orca가 승인을 요구할 수 있으므로 워커를 띄울 때 `--setup run`을 주면 확실하다. setup이 실행되지 않은 워크트리는 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인한다.
 - Codex 샌드박스에서는 `npx --offline @fission-ai/openspec`이 ENOTCACHED로 실패한다. 이미 받아 둔 패키지를 `node ~/.npm/_npx/*/node_modules/@fission-ai/openspec/bin/openspec.js validate <name> --strict`로 직접 실행하면 된다(샌드박스에서 확인). 아카이브는 코디네이터가 병합 때 실행한다.
 - Codex 샌드박스에는 외부 네트워크가 없다. 출처의 HTTP 상태·형식·기준일은 코디네이터가 확인해 spec에 넣는다.
 - strict 검증은 요구사항 본문 500자 초과 경고도 실패로 처리한다. spec에 미리 적는다.

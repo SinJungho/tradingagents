@@ -20,10 +20,9 @@ ROOT = Path(__file__).resolve().parents[2]
 # `.env` or `.env.bak` as a whole path component; `.env.example` stays readable.
 ENV_FILE = re.compile(r"(?:^|[\s/'\"=<:])\.env(?:\.bak)?(?=$|[\s'\";|&)>])")
 ENV_NAMES = {".env", ".env.bak"}
-# Runs that read the live broker account or call a model.
+# Runs that call a model. Read-only `portfolio live` is pre-authorized (AGENTS.md).
 LIVE_RUN = re.compile(
-    r"\btradingagents\s+portfolio\s+live\b"
-    r"|\btradingagents\s+backtest\b"
+    r"\btradingagents\s+backtest\b"
     r"|\btradingagents\s+market-report\b"
     r"|\btradingagents\b[^|;&]*--ticker\b"
 )
@@ -31,7 +30,7 @@ LIVE_RUN = re.compile(
 COMPOUND = re.compile(r"&&|\|\||[;|`]|\$\(")
 # The programs and leading arguments .codex/rules/tradingagents.rules prompts for; keep in sync.
 RULE_PROGRAMS = {"tradingagents", "./.venv/bin/tradingagents", ".venv/bin/tradingagents"}
-RULE_PREFIXES = (["portfolio", "live"], ["backtest"], ["--ticker"], ["market-report"])
+RULE_PREFIXES = (["backtest"], ["--ticker"], ["market-report"])
 PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$", re.MULTILINE)
 # A heredoc body is text handed to a program, not files the shell opens.
 # ponytail: a heredoc piped into an interpreter is not inspected; the ban targets accidents, not evasion.
@@ -115,11 +114,11 @@ def live(payload: dict, codex: bool = False) -> None:
     if not LIVE_RUN.search(command):
         return
     if not codex:
-        _pre_tool("ask", "AGENTS.md: 실계좌 조회·실제 LLM 분석은 사용자가 명시적으로 요청한 경우에만 실행합니다.")
+        _pre_tool("ask", "AGENTS.md: 실제 LLM 분석은 사용자가 명시적으로 요청한 경우에만 실행합니다.")
     elif not _rules_will_prompt(command):
         # Codex hooks cannot ask, and its prefix rules only see a plain command in a known shape.
-        _pre_tool("deny", "실계좌·LLM 실행은 사용자 확인을 받아야 합니다. 다른 명령과 묶지 말고, 환경변수 접두사 "
-                          "없이 `tradingagents portfolio live ...`, `tradingagents backtest ...`, "
+        _pre_tool("deny", "LLM 실행은 사용자 확인을 받아야 합니다. 다른 명령과 묶지 말고, 환경변수 접두사 "
+                          "없이 `tradingagents backtest ...`, `tradingagents market-report ...`, "
                           "`tradingagents --ticker ...`(--ticker를 첫 인자로) 형태의 단독 명령으로 다시 실행하세요.")
 
 

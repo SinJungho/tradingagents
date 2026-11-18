@@ -1,0 +1,4 @@
+- [x] HTML 생성기를 Markdown 렌더러와 가독성 스타일로 수정
+- [x] 합성 보고서 테스트로 표·목록·인라인 서식·HTML 이스케이프 확인
+- [x] 기존 GOOGL HTML/Markdown 산출물 재생성 및 확인
+- [x] 집중 테스트·전체 pytest·Ruff·CLI·OpenSpec strict 검증 후 아카이브
