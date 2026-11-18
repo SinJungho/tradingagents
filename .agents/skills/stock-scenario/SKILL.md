@@ -9,15 +9,15 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 
 ## 1. 경로 선택
 
-기본 경로는 토스 실계좌 보유를 반영하는 `portfolio live`다. 매수·매도·비중 판단은 현재 보유와 통화별 비중을 알아야 의미가 있다.
+기본 경로는 토스 실계좌 보유를 반영하는 `portfolio live`다. 매수·매도·비중 판단은 현재 보유와 통화별 비중을 알아야 의미가 있다. 실계좌 읽기 전용 조회는 저장소 소유자가 사전 허용했으므로 허용을 묻지 않는다.
 
 | 순서 | 상황 | 명령 |
 | --- | --- | --- |
-| 1 (기본) | 실계좌 조회를 허용받음. 대상 종목은 보유 여부와 무관(미보유는 관심종목으로 분석) | `tradingagents portfolio live --symbol <T>` |
-| 2 | 실계좌 허용이 없고 보유 현황을 JSON 파일로 줌 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --portfolio <file.json> --analysts market,news,fundamentals --save --no-show` |
+| 1 (기본) | 매수·보유·매도·비중 요청. 대상 종목은 보유 여부와 무관(미보유는 관심종목으로 분석) | `tradingagents portfolio live --symbol <T>` |
+| 2 | 사용자가 실계좌 대신 보유 현황 JSON 파일을 줌 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --portfolio <file.json> --analysts market,news,fundamentals --save --no-show` |
 | 3 | 보유와 무관한 순수 종목 분석 요청 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --analysts market,news,fundamentals --save --no-show` |
 
-- 매매·비중 요청인데 실계좌 허용이 없으면 1번을 실행하지 말고, "실계좌 조회(읽기 전용)와 LLM 분석을 허용하면 보유를 반영해 분석한다"고 한 번 안내한 뒤 사용자가 고른 경로로 간다. 이미 이번 대화에서 허용했다면 다시 묻지 않는다.
+- 실계좌 조회가 설정 문제로 실패하면(토스 환경변수 누락·인증 실패) 원인을 알리고 `api-doctor` skill로 넘기거나 2·3번 경로를 제안한다.
 - 1번은 `portfolio-check` skill의 실행 조건(환경변수 이름, 계좌 선택)을 먼저 확인한다. 여러 종목이면 `--symbol`을 반복한다(최대 `--max-symbols`). 기본은 경량 경로이고, 사용자가 심층 분석, Bull/Bear 토론, Trader·Risk·Portfolio Manager 결정을 요청한 경우에만 `--full-workflow`를 추가한다.
 - 과거 날짜 분석은 1번으로 할 수 없다(실계좌는 현재 시점). 과거 기준일이 필요하면 2·3번을 쓴다.
 - `--analysts`는 `market`, `sentiment`, `news`, `fundamentals` 중에서 고른다. 생략하면 상품 유형이 허용하는 분석가를 모두 실행한다. 사용자가 범위를 정하지 않았으면 표의 기본 조합을 쓴다.

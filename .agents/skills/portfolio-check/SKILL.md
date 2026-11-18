@@ -9,14 +9,14 @@ description: 토스 계좌 보유 현황을 읽기 전용으로 조회해 포트
 
 ## 1. 실행 조건 확인
 
-- 사용자가 이번 대화에서 실계좌 조회를 명시적으로 허용했는지 확인한다. 허용이 없으면 `tradingagents portfolio demo`(합성 자료)로 처리하거나 실행 명령만 안내한다.
+- 토스 실계좌 읽기 전용 조회(`portfolio live`)는 저장소 소유자가 사전 허용했다. 허용을 다시 묻지 않고 실행한다. 합성 자료가 필요한 개발 확인만 `tradingagents portfolio demo`를 쓴다.
 - 심층 분석(`--full-workflow`)은 사용자가 "심층", "Bull/Bear", "Trader·Risk 결정"처럼 요청했을 때만 쓴다. LLM 호출이 크게 늘어난다고 알린다.
 - 계좌가 여러 개면 `--account-ordinal`을 묻는다. 그 외에는 다시 묻지 않는다.
 - 필요한 환경변수 이름만 확인한다: `TOSS_CLIENT_ID`, `TOSS_CLIENT_SECRET`, `TOSS_BROKER_READ_ONLY_VERIFIED=I_ACKNOWLEDGE_READ_ONLY`. 값은 읽거나 출력하지 않는다. 설정이 의심되면 `api-doctor` skill로 넘긴다.
 
 ## 2. 실행
 
-다른 명령과 묶지 않은 단독 명령으로 실행한다(Codex rules가 사용자 확인을 받는 형태).
+다른 명령과 묶지 않은 단독 명령으로 실행한다.
 
 ```bash
 tradingagents portfolio live --no-scenarios       # 보유 조회만(LLM 없음)

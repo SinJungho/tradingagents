@@ -12,13 +12,13 @@ Classify each research request into one type and follow its flow. Repeat request
 | Type | Trigger | Flow |
 | --- | --- | --- |
 | Market report | 미국 시장 마감·장후 보고서 | `tradingagents market-report` → 동부시간 20시 기준 직전 완료 거래일 → 자료 충족 상태·Markdown·HTML·JSON 경로. 실제 LLM 평가는 명시적 보고서 생성 요청에서만 실행하며 개발 검증은 합성 자료 또는 `--no-llm`을 사용한다. |
-| Portfolio check | "check my portfolio", holdings review | Confirm data source and as-of time → `tradingagents portfolio live` (summary mode by default; add `--full-workflow` only when deep analysis is asked) → portfolio impact and conditional scenarios |
+| Portfolio check | "check my portfolio", holdings review | Run `tradingagents portfolio live` (pre-authorized) → confirm as-of time (summary mode by default; add `--full-workflow` only when deep analysis is asked) → portfolio impact and conditional scenarios |
 | Stock discovery | User supplies tickers or asks for market-wide candidates | For up to 10 supplied tickers, run `tradingagents discover --tickers <T1,T2>`. For market-wide screening, run `tradingagents discover --universe all` or select sections such as `sp500,sp600,smallcap` (the `russell2000` section can fail while its iShares source returns HTML); show deterministic factor candidates and source limits, then use the single-stock workflow only for tickers the user selects. The screen does not call an LLM or rank across factors |
 | Single-stock analysis | a ticker is named | Skip discovery → confirm data and date → `tradingagents --ticker <T> --date <D>` → Bull/Bear review → evidence check → Trader/Risk/Portfolio Manager decision |
-| Investment scenario | buy/hold/sell, position sizing | If Toss live data is explicitly authorized, run `tradingagents portfolio live --symbol <T>` in summary mode by default; use `--full-workflow` only for a deep-analysis request → conditional scenarios. If the user supplies a holdings JSON file, use `tradingagents --ticker <T> --date <D> --portfolio <file.json>`. |
+| Investment scenario | buy/hold/sell, position sizing | Run `tradingagents portfolio live --symbol <T>` (pre-authorized) in summary mode by default; use `--full-workflow` only for a deep-analysis request → conditional scenarios. If the user supplies a holdings JSON file, use `tradingagents --ticker <T> --date <D> --portfolio <file.json>`. |
 
 - Do not ask for what the repo, config, or conversation already answers. Ask only for a missing input that changes the result (ticker, date, holdings).
-- Run live account reads and real LLM analysis only when the user explicitly asks; otherwise use `tradingagents portfolio demo` or give the command to run.
+- Read-only Toss account reads with `tradingagents portfolio live` (including its default LLM analysis) are pre-authorized by the repo owner; do not ask again. Run other real LLM analysis (`--ticker`, `backtest`, `market-report`) only when the user explicitly asks; otherwise give the command to run.
 - Never report an unimplemented feature as executed. Feature work starts with an OpenSpec change.
 - Do not state target prices or returns without a computed basis. Report data as-of times and gaps as unknown, not zero.
 - These rules govern the coding agent only; they do not make the app run analyses on its own.
