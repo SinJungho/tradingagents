@@ -16,6 +16,7 @@ Classify each research request into one type and follow its flow. Repeat request
 | Stock discovery | User supplies tickers or asks for market-wide candidates | For up to 10 supplied tickers, run `tradingagents discover --tickers <T1,T2>`. For market-wide screening, run `tradingagents discover --universe all` or select sections such as `sp500,sp600,smallcap` (the `russell2000` section can fail while its iShares source returns HTML); show deterministic factor candidates and source limits, then use the single-stock workflow only for tickers the user selects. The screen does not call an LLM or rank across factors |
 | Single-stock analysis | a ticker is named | Skip discovery → confirm data and date → `tradingagents --ticker <T> --date <D>` → Bull/Bear review → evidence check → Trader/Risk/Portfolio Manager decision |
 | Investment scenario | buy/hold/sell, position sizing | Run `tradingagents portfolio live --symbol <T>` (pre-authorized) in summary mode by default; use `--full-workflow` only for a deep-analysis request → conditional scenarios. If the user supplies a holdings JSON file, use `tradingagents --ticker <T> --date <D> --portfolio <file.json>`. |
+| Disclosure snapshot | 13F 기관·투자자 보유, 미국 하원의원 주식 거래 공시 | Run `.venv/bin/python .agents/skills/portfolio-disclosures/scripts/disclosures.py --filer <CIK or manager> --house <member>` (official SEC and House Clerk sources, no LLM) → show its fixed-width output unchanged in a text code block → state as-of dates, gaps, and disclosure limits. Senators are out of scope. |
 
 - Do not ask for what the repo, config, or conversation already answers. Ask only for a missing input that changes the result (ticker, date, holdings).
 - Read-only Toss account reads with `tradingagents portfolio live` (including its default LLM analysis) are pre-authorized by the repo owner; do not ask again. Run other real LLM analysis (`--ticker`, `backtest`, `market-report`) only when the user explicitly asks; otherwise give the command to run.
@@ -31,7 +32,7 @@ Classify each research request into one type and follow its flow. Repeat request
 
 ## Agent skills
 
-- Repeated workflows live in `.agents/skills/` (Codex reads it directly; `.claude/skills` is a symlink to it for Claude Code): `portfolio-check`, `stock-scenario`, `stock-discovery`, `market-report`, `backtest-eval`, `api-doctor`, `model-selection`, `openspec-change`, `next-steps`, `reference-research`, `data-source-check`, `fork-release`. Update a skill when its workflow changes, and keep the rules above authoritative.
+- Repeated workflows live in `.agents/skills/` (Codex reads it directly; `.claude/skills` is a symlink to it for Claude Code): `portfolio-check`, `portfolio-disclosures`, `stock-scenario`, `stock-discovery`, `market-report`, `backtest-eval`, `api-doctor`, `model-selection`, `openspec-change`, `next-steps`, `reference-research`, `data-source-check`, `fork-release`. Update a skill when its workflow changes, and keep the rules above authoritative.
 
 ## Agent hooks
 
