@@ -130,6 +130,14 @@ def classify_api_failure(error: BaseException) -> APIFailure:
     status = _status_from_error(error)
     if status is not None:
         return classify_http_status(status)
+    # Provider machine codes (e.g. OpenAI `code`) are safe to read; messages are not.
+    code = getattr(error, "code", None)
+    if isinstance(code, str):
+        code = code.lower()
+        if "usage_limit" in code or "quota" in code:
+            return APIFailure("quota", False)
+        if "rate_limit" in code:
+            return APIFailure("rate_limit", False)
 
     chain = tuple(_error_chain(error))
     names = {type(item).__name__.lower() for item in chain}

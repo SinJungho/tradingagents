@@ -73,6 +73,25 @@ def test_provider_exception_types_are_classified_without_inspecting_messages(nam
     assert "synthetic" not in format_api_failure(error)
 
 
+@pytest.mark.parametrize(
+    ("code", "category", "retryable"),
+    [
+        ("subscription_sharing_usage_limit_exceeded", "quota", False),
+        ("insufficient_quota", "quota", False),
+        ("rate_limit_exceeded", "rate_limit", False),
+        ("invalid_api_key_format", "unknown", False),
+    ],
+)
+def test_provider_error_codes_are_classified_without_inspecting_messages(code, category, retryable):
+    error = Exception("synthetic private response")
+    error.code = code
+
+    failure = classify_api_failure(error)
+
+    assert failure == APIFailure(category, retryable)
+    assert "synthetic" not in format_api_failure(error)
+
+
 def test_probe_removes_credentials_and_query_and_does_not_follow_redirects(monkeypatch):
     seen = {}
 
