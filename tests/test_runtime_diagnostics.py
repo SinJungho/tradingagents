@@ -243,3 +243,111 @@ def test_legacy_plan_diagnosis_keeps_its_store_and_command(monkeypatch):
     assert "연결 안 됨" in report
     assert "tradingagents auth connect" in report
     assert "login chatgpt" not in report
+
+
+def test_policy_covers_skill_sources_and_yahoo_cookie_flow():
+    policy = worker_network_policy(
+        config={"llm_provider": "openai", "polymarket_transport": "direct"}, environ={},
+    )
+    hosts = {d["hostname"] for d in policy["destinations"]}
+    assert {
+        "efts.sec.gov", "disclosures-clerk.house.gov", "apps.bea.gov", "www.bea.gov",
+        "www.bls.gov", "www.census.gov", "www.federalreserve.gov",
+        "en.wikipedia.org", "www.nasdaqtrader.com", "www.ishares.com",
+        "fc.yahoo.com", "guce.yahoo.com", "consent.yahoo.com", "finance.yahoo.com",
+    } <= hosts
+    assert {"api.anthropic.com", "api.github.com", "pypi.org"}.isdisjoint(hosts)
+
+
+def test_codex_toml_roundtrip_and_existing_cli_formats(monkeypatch):
+    import json
+    import tomllib
+
+    from tradingagents.runtime_diagnostics import codex_network_toml
+
+    policy = worker_network_policy(config={
+        "llm_provider": "openai", "polymarket_transport": "direct",
+        "backend_url": "https://user:synthetic-password@custom.example/path?key=synthetic-key",
+    }, environ={"OPENAI_API_KEY": "synthetic-api-key"})
+    text = codex_network_toml(policy)
+    parsed = tomllib.loads(text)
+    assert parsed["sandbox_workspace_write"]["network_access"] is True
+    proxy = parsed["features"]["network_proxy"]
+    assert proxy["enabled"] is True
+    assert proxy["allow_upstream_proxy"] is False
+    assert proxy["allow_local_binding"] is False
+    assert proxy["domains"]["custom.example"] == "allow"
+    assert text.count('"custom.example"') == 1
+    assert "synthetic-" not in text
+    assert "user:" not in text
+    monkeypatch.setattr("cli.main.worker_network_policy", lambda: policy)
+    assert json.loads(runner.invoke(app, ["network-policy"]).output) == policy
+    assert "custom.example:443" in runner.invoke(app, ["network-policy", "--format", "text"]).output
+    result = runner.invoke(app, ["network-policy", "--format", "codex-toml"])
+    assert result.exit_code == 0
+    assert tomllib.loads(result.output) == parsed
+
+
+def test_codex_toml_refuses_unresolved_alias(monkeypatch):
+    import requests
+
+    monkeypatch.setattr("tradingagents.runtime_diagnostics.transport_target", lambda _: (
+        _ for _ in ()
+    ).throw(requests.ConnectionError("synthetic-secret")))
+    policy = worker_network_policy(config={"llm_provider": "openai"}, environ={})
+    monkeypatch.setattr("cli.main.worker_network_policy", lambda: policy)
+    result = runner.invoke(app, ["network-policy", "--format", "codex-toml"])
+    assert result.exit_code == 2
+    assert "[sandbox_workspace_write]" not in result.output
+    assert "synthetic-secret" not in str(policy) + result.output
+
+
+def test_invalid_or_local_endpoint_never_produces_partial_toml():
+    import pytest
+
+    from tradingagents.runtime_diagnostics import codex_network_toml
+
+    for endpoint in (
+        "https://*.example.com", "https://bad_host.test", "https://-bad.test",
+        "https://" + "a" * 64 + ".test", "https://example.test:invalid",
+        "https://example.test:8443", "https://example.test:0", "http://localhost:11434", "https://10.0.0.1",
+        "https://example.test/\nsecret", "https://" + ("a." * 127) + "test",
+    ):
+        policy = worker_network_policy(config={
+            "llm_provider": "openai", "backend_url": endpoint,
+            "polymarket_transport": "direct",
+        }, environ={})
+        with pytest.raises(ValueError):
+            codex_network_toml(policy)
+
+
+def test_project_config_is_not_runtime_enforcement_evidence(tmp_path):
+    from tradingagents.runtime_diagnostics import project_network_status
+
+    assert "없음" in project_network_status(str(tmp_path))
+    (tmp_path / ".codex").mkdir()
+    path = tmp_path / ".codex/config.toml"
+    path.write_text('[features.network_proxy]\nenabled = true\n')
+    assert "실제 적용 미검증" in project_network_status(str(tmp_path))
+    report = diagnose_runtime(config={"polymarket_transport": "direct"}, environ={},
+                              probe=lambda _: EndpointProbe(True), cwd=str(tmp_path))
+    assert "도메인 차단 확인: 미검증" in report
+    assert "인증 성공을 뜻하지 않음" in report
+    path.write_text('invalid [')
+    assert "확인 불가" in project_network_status(str(tmp_path))
+
+
+def test_http_errors_are_reachable_but_not_authenticated_or_policy_evidence():
+    for status in (401, 403, 429, 503):
+        report = diagnose_runtime(config={"polymarket_transport": "direct"}, environ={},
+                                  probe=lambda _, code=status: EndpointProbe(True, status_code=code))
+        assert f"도달 가능 (HTTP {status}; 인증·공급자 응답은 별도 확인)" in report
+        assert "도메인 차단 확인: 미검증" in report
+
+
+def test_valid_but_wrong_shape_project_toml_does_not_crash(tmp_path):
+    from tradingagents.runtime_diagnostics import project_network_status
+
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_text('features = true')
+    assert "미확인" in project_network_status(str(tmp_path))

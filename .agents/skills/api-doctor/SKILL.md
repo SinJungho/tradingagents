@@ -9,6 +9,7 @@ description: LLM·토스·데이터 API 호출 실패를 진단하고 조치한�
 
 ```bash
 tradingagents network-policy --format json
+tradingagents network-policy --format codex-toml
 tradingagents doctor
 ```
 
@@ -32,3 +33,7 @@ Codex의 새 워커 세션은 시작 hook을 Codex에서 한 번 신뢰한 뒤 `
 - 변수명, 설정 여부, 오류 분류, HTTP 상태, 재시도 가능 여부만 보고한다. 키·토큰·계좌 식별자·원시 응답은 출력하지 않는다.
 - env 파일 값을 직접 읽지 않는다(hook이 차단한다). "읽어서 확인해" 요청에는 `doctor` 결과로 대신한다.
 - 유료 호출이 발생할 수 있는 테스트(실제 모델 호출 등)는 사용자 허용 후 실행한다.
+
+## 프로젝트 네트워크 설정 검증
+
+`--format codex-toml`은 검토용 조각만 출력하며 파일을 수정하지 않는다. 미확인 별칭·로컬/IP 대상이 있으면 실패한다. 검토 후 신뢰된 프로젝트의 `.codex/config.toml`에 병합하되 기존 파일 접근·승인 설정을 유지한다. `docs/sandbox-network.md`의 검증 절차를 따른다. 설정 존재, 외부 연결, 명시적 정책 차단은 서로 다른 결과다. 훅의 성공은 에이전트 일반 명령 경로의 적용 증거가 아니며 DNS 실패·시간 초과·공급자의 HTTP 403도 차단 증거가 아니다. 관리형 정책 때문에 적용되지 않으면 배포를 중단하고 관리자에게 실행 환경 변경을 요청한다. 무제한 네트워크로 대체하지 않는다.

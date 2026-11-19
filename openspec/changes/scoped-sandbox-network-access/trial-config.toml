@@ -1,0 +1,38 @@
+# Review before merging into .codex/config.toml; this command changes no files.
+# Domain rules cover sandboxed commands, not approved escalation or MCP tools.
+# Domain rules are host-level; JSON TCP ports are not enforced by this fragment.
+[sandbox_workspace_write]
+network_access = true
+
+[features.network_proxy]
+enabled = true
+allow_upstream_proxy = false
+allow_local_binding = false
+dangerously_allow_non_loopback_proxy = false
+dangerously_allow_all_unix_sockets = false
+
+[features.network_proxy.domains]
+"api.openai.com" = "allow"
+"api.stlouisfed.org" = "allow"
+"api.stocktwits.com" = "allow"
+"apps.bea.gov" = "allow"
+"consent.yahoo.com" = "allow"
+"d29c69nd1a26c8.cloudfront.net" = "allow"
+"data.sec.gov" = "allow"
+"disclosures-clerk.house.gov" = "allow"
+"efts.sec.gov" = "allow"
+"en.wikipedia.org" = "allow"
+"fc.yahoo.com" = "allow"
+"finance.yahoo.com" = "allow"
+"gamma-api.polymarket.com" = "allow"
+"guce.yahoo.com" = "allow"
+"query1.finance.yahoo.com" = "allow"
+"query2.finance.yahoo.com" = "allow"
+"www.bea.gov" = "allow"
+"www.bls.gov" = "allow"
+"www.census.gov" = "allow"
+"www.federalreserve.gov" = "allow"
+"www.ishares.com" = "allow"
+"www.nasdaqtrader.com" = "allow"
+"www.reddit.com" = "allow"
+"www.sec.gov" = "allow"

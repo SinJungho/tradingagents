@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 import re
+import tomllib
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
@@ -58,6 +61,10 @@ _DATA_VENDOR_ENDPOINTS = {
     "yfinance": (
         ("Yahoo Finance (quotes)", "https://query2.finance.yahoo.com"),
         ("Yahoo Finance (news)", "https://query1.finance.yahoo.com"),
+        ("Yahoo cookie", "https://fc.yahoo.com"),
+        ("Yahoo consent", "https://guce.yahoo.com"),
+        ("Yahoo consent collection", "https://consent.yahoo.com"),
+        ("Yahoo Finance", "https://finance.yahoo.com"),
     ),
     "alpha_vantage": (("Alpha Vantage", "https://www.alphavantage.co"),),
     "sec_edgar": (
@@ -71,6 +78,23 @@ _DATA_VENDOR_ENDPOINTS = {
 _ALWAYS_USED_DATA_ENDPOINTS = (
     ("Reddit", "https://www.reddit.com"),
     ("StockTwits", "https://api.stocktwits.com"),
+)
+# Direct skill workflows bypass the vendor router; keep their public origins here.
+_SKILL_ENDPOINTS = (
+    ("Disclosure SEC search", "https://efts.sec.gov"),
+    ("Disclosure SEC filings", "https://www.sec.gov"),
+    ("Disclosure SEC submissions", "https://data.sec.gov"),
+    ("House disclosures", "https://disclosures-clerk.house.gov"),
+    ("Disclosure 13F tickers", "https://api.openfigi.com"),
+    ("Market report FRED", "https://api.stlouisfed.org"),
+    ("Market report BEA releases", "https://apps.bea.gov"),
+    ("Market report BEA calendar", "https://www.bea.gov"),
+    ("Market report Census", "https://www.census.gov"),
+    ("Market report BLS", "https://www.bls.gov"),
+    ("Market report Federal Reserve", "https://www.federalreserve.gov"),
+    ("Discovery index constituents", "https://en.wikipedia.org"),
+    ("Discovery listed symbols", "https://www.nasdaqtrader.com"),
+    ("Discovery Russell 2000", "https://www.ishares.com"),
 )
 _TYPESAFE_ENDPOINT = "https://api.typesafe.ai"
 _TOSS_ENV = (
@@ -183,7 +207,8 @@ def _safe_context(environ: Mapping[str, str]) -> str:
 
 def _probe_status(probe: EndpointProbe) -> str:
     if probe.reachable:
-        return "도달 가능"
+        status = f" (HTTP {probe.status_code}; 인증·공급자 응답은 별도 확인)" if probe.status_code else ""
+        return "도달 가능" + status
     return f"도달 실패: {format_api_failure(probe.failure or APIFailure('unknown', False))}"
 
 
@@ -206,7 +231,7 @@ def _selected_data_endpoints(config: Mapping[str, object]):
                 list(available) if not explicit else []
             )
             if not vendors:
-                unresolved.append(f"{category}/{method}: configured provider unavailable")
+                unresolved.append("data tool: configured provider unavailable")
             selected.update(vendors)
 
     endpoints = {
@@ -240,8 +265,10 @@ def worker_network_policy(
         try:
             parts = urlsplit(url)
             hostname = parts.hostname
-            port = parts.port or (443 if parts.scheme == "https" else 80)
-            if not hostname or parts.scheme not in {"http", "https"}:
+            port = parts.port if parts.port is not None else (443 if parts.scheme == "https" else 80)
+            if port == 0:
+                raise ValueError
+            if not hostname or parts.scheme not in {"http", "https"} or _CONTROL.search(url):
                 raise ValueError
             try:
                 address = ipaddress.ip_address(hostname)
@@ -250,7 +277,7 @@ def worker_network_policy(
             except ValueError:
                 hostname = hostname.rstrip(".").encode("idna").decode("ascii").lower()
                 labels = hostname.split(".")
-                if any(
+                if len(hostname) > 253 or any(
                     not label
                     or len(label) > 63
                     or label.startswith("-")
@@ -279,7 +306,8 @@ def worker_network_policy(
         base_url = _tier_base_url(active_config, provider, tier)
         add(f"{tier} LLM", _endpoint_url(provider, base_url, active_env))
 
-    for label, url in sorted(selected_endpoints | set(_ALWAYS_USED_DATA_ENDPOINTS)):
+    skill_endpoints = set(_SKILL_ENDPOINTS) | set(_DATA_VENDOR_ENDPOINTS["yfinance"])
+    for label, url in sorted(selected_endpoints | set(_ALWAYS_USED_DATA_ENDPOINTS) | skill_endpoints):
         add(label, url)
     if "polymarket" in selected_vendors and active_config.get("polymarket_transport", "cloudfront_alias") == "cloudfront_alias":
         try:
@@ -295,6 +323,9 @@ def worker_network_policy(
         _provider(active_config, tier) == "chatgpt" for tier in ("quick", "deep")
     ):
         add("OpenAI auth", "https://auth.openai.com")
+
+    if any(_provider(active_config, tier) == "bedrock" for tier in ("quick", "deep")):
+        unresolved.append("AWS credential-chain destinations require review")
 
     return {
         "schema": "tradingagents.worker-egress.v1",
@@ -316,6 +347,63 @@ def worker_network_policy(
     }
 
 
+def codex_network_toml(policy: Mapping[str, object]) -> str:
+    """Render a review-only fragment, refusing incomplete or broader-than-needed rules."""
+    if policy["unresolved"]:
+        raise ValueError("미확인 목적지가 있어 TOML 생성을 중단합니다. JSON 정책을 확인하세요.")
+    hosts = set()
+    for destination in policy["destinations"]:
+        host = destination["hostname"]
+        if destination["scope"] == "loopback":
+            raise ValueError("로컬 목적지는 별도 검토가 필요합니다.")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("IP 목적지는 별도 검토가 필요합니다.")
+        if (
+            not isinstance(host, str) or len(host) > 253 or "." not in host
+            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
+                   for label in host.split("."))
+            or host == "localhost" or host.endswith(".localhost")
+            or destination["port"] not in (80, 443)
+        ):
+            raise ValueError("호스트 또는 포트가 제한형 TOML 출력에 적합하지 않습니다.")
+        hosts.add(host)
+    if not hosts:
+        raise ValueError("허용 목적지가 없습니다.")
+    lines = [
+        "# Review before merging into .codex/config.toml; this command changes no files.",
+        "# Domain rules cover sandboxed commands, not approved escalation or MCP tools.",
+        "# Domain rules are host-level; JSON TCP ports are not enforced by this fragment.",
+        "[sandbox_workspace_write]", "network_access = true", "",
+        "[features.network_proxy]", "enabled = true",
+        "allow_upstream_proxy = false", "allow_local_binding = false",
+        "dangerously_allow_non_loopback_proxy = false",
+        "dangerously_allow_all_unix_sockets = false", "",
+        "[features.network_proxy.domains]",
+    ]
+    lines.extend(f'{json.dumps(host)} = "allow"' for host in sorted(hosts))
+    return "\n".join(lines) + "\n"
+
+
+def project_network_status(directory: str) -> str:
+    """Inspect only the project file, never infer effective runtime policy from it."""
+    path = Path(directory) / ".codex" / "config.toml"
+    try:
+        config = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return "없음 (미적용; 상위·관리형 설정은 별도 확인)"
+    except (OSError, ValueError):
+        return "확인 불가 (읽기 또는 TOML 오류)"
+    features = config.get("features", {})
+    proxy = features.get("network_proxy") if isinstance(features, dict) else None
+    if not isinstance(proxy, dict) or proxy.get("enabled") is not True:
+        return "존재; 제한형 프록시 설정 미확인"
+    return "존재; 프록시 설정 있음 (신뢰·관리형 정책·실제 적용 미검증)"
+
+
 def diagnose_runtime(
     *,
     config: Mapping[str, object] | None = None,
@@ -335,6 +423,12 @@ def diagnose_runtime(
         f"- Orca 실행 환경: {_safe_context(active_env)}",
         f"- 작업 디렉터리: {working_directory}",
         "- 범위: 현재 프로세스에서 보이는 설정만 확인",
+        "",
+        "네트워크 정책 상태",
+        f"- 프로젝트 설정: {project_network_status(working_directory)}",
+        "- 연결 검사: 아래 결과는 현재 프로세스의 도달성만 표시; 인증 성공을 뜻하지 않음",
+        "- 도메인 차단 확인: 미검증; 일반 에이전트 명령에서 명시적 정책 거부 증거 필요",
+        "- DNS 실패·시간 초과·HTTP 403만으로 정책 차단을 판정하지 않음",
         "",
         "LLM 제공자",
     ]

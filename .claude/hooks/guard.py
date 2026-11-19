@@ -220,8 +220,14 @@ def network(payload: dict) -> None:
         details += "\n\n네트워크 정책은 Orca 실행 호스트에서 적용한 뒤 이 워커에서 다시 확인해야 합니다."
         status = "API 사전 진단에서 도달 실패를 찾음"
     else:
-        details = "자동 API 사전 진단 통과.\n\n" + details
+        details = "자동 API 사전 진단: 훅 프로세스 연결 검사 완료.\n\n" + details
 
+    details += (
+        "\n\n이 결과는 훅 프로세스의 진단이며 에이전트 샌드박스 정책 적용 증거가 아닙니다. "
+        "프로젝트 .codex/config.toml의 신뢰·관리형 정책을 확인하고 일반 명령 경로에서 "
+        "허용 연결과 미허용 도메인의 명시적 차단을 별도로 검증하세요. "
+        "DNS 실패나 시간 초과만으로 정책 차단을 판정하지 마세요."
+    )
     report("워커 시작 시 자동 실행한 `tradingagents doctor` 결과:\n\n" + details, status if network_issue else None)
 
 

@@ -172,6 +172,7 @@ def test_session_start_network_diagnostic_success_is_safe_and_non_blocking(
     assert "SYNTHETIC_AUTH_RESPONSE_CANARY" not in json.dumps(output)
     assert calls[0][0] == [str(executable), "doctor"]
     assert len(calls) == 1
+    assert "샌드박스 정책 적용 증거가 아닙니다" in output["hookSpecificOutput"]["additionalContext"]
 
 
 @pytest.mark.unit

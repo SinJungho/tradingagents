@@ -37,6 +37,7 @@ class APIFailure:
 class EndpointProbe:
     reachable: bool
     failure: APIFailure | None = None
+    status_code: int | None = None
 
 
 class _NoNetrcAuth(AuthBase):
@@ -212,9 +213,9 @@ def probe_endpoint(url: str, *, timeout: float = 3.0) -> EndpointProbe:
     session.auth = _NoNetrcAuth()
     try:
         response = session.head(origin, timeout=timeout, allow_redirects=False)
-        # Any HTTP response proves host reachability; no body or status is retained.
-        del response
-        return EndpointProbe(True)
+        # Retain only the HTTP status, never headers or body.
+        status = getattr(response, "status_code", None)
+        return EndpointProbe(True, status_code=status if isinstance(status, int) else None)
     except requests.RequestException as exc:
         return EndpointProbe(False, classify_api_failure(exc))
     finally:
