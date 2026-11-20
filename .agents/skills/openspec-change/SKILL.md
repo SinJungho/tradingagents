@@ -56,6 +56,6 @@ npx --offline @fission-ai/openspec archive <name> --yes
 - 같은 파일·같은 spec 요구사항을 두 Worker가 고치지 않게 나눈다. 겹치면 하나를 병합한 뒤 다음 Worker를 시작한다.
 - 워크트리 Python 환경: 저장소 루트 `orca.yaml`의 `scripts.setup`이 새 워크트리마다 자체 `.venv`(개발 도구 포함)를 만든다. 2026-11-15 확인: 기본 설정(`--setup inherit`)으로 만든 워크트리에서도 별도 승인 없이 실행됐다. setup 내용을 바꾼 직후에는 Orca가 승인을 요구할 수 있으므로 워커를 띄울 때 `--setup run`을 주면 확실하다. setup이 실행되지 않은 워크트리는 메인 저장소의 `.venv/bin/python -m pytest`를 워크트리 루트에서 실행하고, 먼저 `import tradingagents`가 워크트리 경로를 가리키는지 확인한다.
 - Codex 샌드박스에서는 `npx --offline @fission-ai/openspec`이 ENOTCACHED로 실패한다. 이미 받아 둔 패키지를 `node ~/.npm/_npx/*/node_modules/@fission-ai/openspec/bin/openspec.js validate <name> --strict`로 직접 실행하면 된다(샌드박스에서 확인). 아카이브는 코디네이터가 병합 때 실행한다.
-- Codex 샌드박스에는 외부 네트워크가 없다. 출처의 HTTP 상태·형식·기준일은 코디네이터가 확인해 spec에 넣는다.
+- Codex 네트워크 사용 여부는 프로젝트 신뢰·프록시·관리형 정책에 따라 다르다. 일반 명령 경로에서 연결을 확인하고, DNS 실패를 정책 차단으로 단정하지 않는다. 제한된 실행은 승인된 개별 권한 상승으로 확인할 수 있으나 샌드박스 검증과 구분해 기록한다.
 - strict 검증은 요구사항 본문 500자 초과 경고도 실패로 처리한다. spec에 미리 적는다.
 - 병합마다 전체 검증(실패 시 즉시 중단되게 `set -o pipefail`) → 아카이브 → `orchestration worker-stop` → `orca worktree rm --worktree path:<경로> --delete-branch` 순서로 정리한다.

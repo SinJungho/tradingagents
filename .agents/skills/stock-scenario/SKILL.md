@@ -17,7 +17,8 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 | 2 | 사용자가 실계좌 대신 보유 현황 JSON 파일을 줌 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --portfolio <file.json> --analysts market,news,fundamentals --save --no-show` |
 | 3 | 보유와 무관한 순수 종목 분석 요청 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --analysts market,news,fundamentals --save --no-show` |
 
-- 실계좌 조회가 설정 문제로 실패하면(토스 환경변수 누락·인증 실패) 원인을 알리고 `api-doctor` skill로 넘기거나 2·3번 경로를 제안한다.
+- 실계좌 조회가 설정 문제로 실패하면(토스 환경변수 누락·인증 실패) 원인을 알리고 `api-doctor` skill로 넘기거나 2·3번 경로를 제안한다. 워크트리에 `.env`가 없을 때의 실행 위치와 `--account-ordinal`은 `portfolio-check`의 실행 조건을 따른다.
+- 계좌 조회는 성공했는데 시나리오가 `계정 한도 초과`로 실패하면 LLM 제공자 한도 소진이다. 재실행하지 말고 원인과 선택지(한도 해제 후 재실행, 다른 제공자 API 키)를 알린다. 그래프 없이 보고서 수치로 정리한 내용은 그래프 결과가 아니라고 밝힌다.
 - 1번은 `portfolio-check` skill의 실행 조건(환경변수 이름, 계좌 선택)을 먼저 확인한다. 여러 종목이면 `--symbol`을 반복한다(최대 `--max-symbols`). 기본은 경량 경로이고, 사용자가 심층 분석, Bull/Bear 토론, Trader·Risk·Portfolio Manager 결정을 요청한 경우에만 `--full-workflow`를 추가한다.
 - 과거 날짜 분석은 1번으로 할 수 없다(실계좌는 현재 시점). 과거 기준일이 필요하면 2·3번을 쓴다.
 - `--analysts`는 `market`, `sentiment`, `news`, `fundamentals` 중에서 고른다. 생략하면 상품 유형이 허용하는 분석가를 모두 실행한다. 사용자가 범위를 정하지 않았으면 표의 기본 조합을 쓴다.

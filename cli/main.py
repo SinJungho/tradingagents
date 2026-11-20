@@ -16,7 +16,11 @@ from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import SIGNED_IN_PROVIDERS
 from tradingagents.portfolio import load_portfolio
-from tradingagents.runtime_diagnostics import diagnose_runtime, worker_network_policy
+from tradingagents.runtime_diagnostics import (
+    codex_network_toml,
+    diagnose_runtime,
+    worker_network_policy,
+)
 from tradingagents.stock_discovery import discover_market, discover_nasdaq100, discover_stocks
 from tradingagents.style_scores import evaluate_styles
 
@@ -71,16 +75,24 @@ def doctor() -> None:
 
 @app.command("network-policy")
 def network_policy(
-    output_format: str = typer.Option("json", "--format", help="Output format: json or text"),
+    output_format: str = typer.Option("json", "--format", help="Output format: json, text or codex-toml"),
 ) -> None:
     """Export the DNS and TCP destinations the current worker needs; does not change host policy."""
+    if output_format not in {"json", "text", "codex-toml"}:
+        typer.echo("--format must be json, text or codex-toml", err=True)
+        raise typer.Exit(code=2)
     policy = worker_network_policy()
+    if output_format == "codex-toml":
+        try:
+            fragment = codex_network_toml(policy)
+        except ValueError as error:
+            typer.echo(str(error), err=True)
+            raise typer.Exit(code=2) from None
+        typer.echo(fragment, nl=False)
+        return
     if output_format == "json":
         typer.echo(json.dumps(policy, ensure_ascii=False, indent=2))
         return
-    if output_format != "text":
-        console.print("--format must be json or text", style="red")
-        raise typer.Exit(code=2)
 
     typer.echo(f"정책 적용 위치: {policy['policy_owner']} (이 명령은 정책을 변경하지 않음)")
     typer.echo("DNS: 워커 resolver로 UDP/TCP 53 허용")

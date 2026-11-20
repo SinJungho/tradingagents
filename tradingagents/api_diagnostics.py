@@ -37,6 +37,7 @@ class APIFailure:
 class EndpointProbe:
     reachable: bool
     failure: APIFailure | None = None
+    status_code: int | None = None
 
 
 class _NoNetrcAuth(AuthBase):
@@ -129,6 +130,14 @@ def classify_api_failure(error: BaseException) -> APIFailure:
     status = _status_from_error(error)
     if status is not None:
         return classify_http_status(status)
+    # Provider machine codes (e.g. OpenAI `code`) are safe to read; messages are not.
+    code = getattr(error, "code", None)
+    if isinstance(code, str):
+        code = code.lower()
+        if "usage_limit" in code or "quota" in code:
+            return APIFailure("quota", False)
+        if "rate_limit" in code:
+            return APIFailure("rate_limit", False)
 
     chain = tuple(_error_chain(error))
     names = {type(item).__name__.lower() for item in chain}
@@ -212,9 +221,9 @@ def probe_endpoint(url: str, *, timeout: float = 3.0) -> EndpointProbe:
     session.auth = _NoNetrcAuth()
     try:
         response = session.head(origin, timeout=timeout, allow_redirects=False)
-        # Any HTTP response proves host reachability; no body or status is retained.
-        del response
-        return EndpointProbe(True)
+        # Retain only the HTTP status, never headers or body.
+        status = getattr(response, "status_code", None)
+        return EndpointProbe(True, status_code=status if isinstance(status, int) else None)
     except requests.RequestException as exc:
         return EndpointProbe(False, classify_api_failure(exc))
     finally:

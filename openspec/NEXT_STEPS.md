@@ -1,12 +1,13 @@
 # 후속 작업 목록
 
-최종 갱신: 2026-11-17
+최종 갱신: 2026-11-19
 
 ## 현재 상태
 
-- 브랜치·PR: `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1~#4로 `main`에 병합됐다(PR #4: 2026-11-16, merge commit `946f75a`). 그 뒤 SEC 404 구분 수정과 문서는 작업 브랜치에만 있고, 재현성 확인 3일 차 뒤 PR로 올린다.
+- 브랜치·PR: `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1~#5로 `main`에 병합됐다(PR #5: 2026-11-18). `SinJungho/feat-13f-politician-portfolio`의 공시 스냅샷 skill과 샌드박스 네트워크 정책은 PR #6(열림)에 있다. `scoped-sandbox-network-access`는 새 워크트리 재현 검증과 아카이브가 남았다.
 - 차트 선 긋기 제거(2026-11-18): 선 긋기와 차트 분석을 Yahoo Finance + 차트 MCP 연동으로 별도 구현해 이 저장소의 선 후보·구조선·피보나치·AVWAP·시나리오 경계와 기존 `chart-eval` 실험(가격 채점·9셀 토론), `technical-backtest`를 제거했다. 복구용 백업은 `results/_backup-line-drawing-removed-2026-11-18.tgz`(git 비추적). 상세: `openspec/changes/archive/2026-11-18-remove-chart-line-drawing/`.
 - 최신 기술 분석 제거(2026-11-18): `chart_eval`과 `technical-latest`(Toss 일봉 지표·차트·보고서)를 삭제했다. 차트 분석은 Yahoo Finance + 차트 MCP로 별도 진행한다. 상세: `openspec/changes/archive/2026-11-18-remove-technical-latest/`.
+- 공개 포트폴리오 공시(2026-11-18): `portfolio-disclosures` skill과 `scripts/disclosures.py`가 SEC 13F(수정 신고 반영, 분기 비교), 하원 연간 재무공시 주식 보유(금액 구간 순, 2026-11-19), 하원 PTR(RC4 암호화 PDF 포함)을 78칸 고정폭 표로 보여준다. 상원의원은 사용자 결정으로 범위에서 뺐다. 상세: `openspec/changes/archive/2026-11-18-portfolio-disclosures-tui/`.
 - 시장 보고서
   - 실제 LLM 재평가(Red 64, Blue 78; 이전 52, 73)의 지적을 고쳤다: 뉴스 50건 조회와 공급자 한도 표시, 금리 관측일 불일치 비고, DXY(ICE DXY) 라벨, 핵심 요약의 최대 변동 포함, 지수 이름 숫자의 해석 검사 제외. 기록: `results/market-reports/2026-11-12-a80efcde3994475289e8c78f4777e5ea/quality-review.md`.
   - 표기: 머리말 시각 ET 통일, 다음 개장 이후 생성 주의, "해당 없음" 값 칸, DXY·WTI·금 직전 거래일 대비 변화율, 저가치 헤드라인 제외와 기사 표, 시장 폭 제외·실패 종목은 앞 10개와 "외 N개".
@@ -38,6 +39,7 @@
 | 2 | 재현성 확인 3일 차 | 2026-11-17 대상 `--no-llm` 보고서. 2026-11-18 10:23 KST 예약(작업 `e8090580`). 3일 비교 표를 남긴다. 실제 LLM 확인은 2026-11-15에 마쳤다. | 작음 | 불필요 |
 | 3 | `all` 실패율 재측정(선택) | SEC 404 구분 뒤 `discover --universe all` 실패율이 얼마나 줄었는지 측정하지 않았다(2026-11-15 실패 93건, 같은 로그의 SEC 404 110줄). Yahoo 지연 제한을 피해 하루 한 번만 실행한다. | 중간 | 불필요 |
 | 6 | GOOGL LLM 그래프 재개 | 2026-11-17 `--ticker GOOGL --date 2026-11-16 --checkpoint` 실행이 ChatGPT 구독 사용량 한도로 Research Manager 단계에서 멈췄다. 한도가 풀린 뒤 같은 명령으로 재개하면 Trader·Risk·PM 결정을 얻는다. | 작음 | 실행 시점 |
+| 7 | 공시 스냅샷 보강(선택) | PTR 옵션 행사가·만기(설명 칸), 하원 연간 재무공시의 수정 신고 반영은 아직 하지 않는다. 요청이 있을 때 `data-source-check`부터 한다. | 중간 | 필요 여부 |
 | 주기 확인 | Russell 2000 출처 | iShares IWM AJAX가 CSV 대신 HTML을 반환한다(2026-11-16 08:47 KST 재확인도 동일. 2026-11-15에는 기본·기준일 지정·JSON 형식 모두 HTML, 경로 축약은 404). Vanguard·SSGA·FTSE Russell 무료 대체 없음. 복구 전까지 `discover --universe russell2000`은 실패한다. | 작음 | 유료 출처는 범위 밖 |
 
 ## 다음 시작점
