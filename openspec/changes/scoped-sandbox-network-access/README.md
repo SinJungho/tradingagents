@@ -55,3 +55,9 @@
 - 기존 현재 세션의 제한은 소급 변경되지 않는다. 새 세션에서 사용해야 한다.
 - 커밋·푸시·병합은 하지 않았다. 기준 커밋 새 워크트리 재현 검증과 OpenSpec 아카이브는 별도 커밋 요청 이후 남아 있다. 전체 배포 완료로 표시하지 않는다.
 - rollback이 필요하면 이번에 생성한 `.codex/config.toml`이 `trial-config.toml`과 동일한지 먼저 확인한 뒤 삭제한다. 이후 다른 설정이 추가됐으면 이번 네트워크 항목만 제거한다.
+
+## 기준 커밋 새 워크트리 재현 (2026-11-20, 부분)
+- 기준: `ad368c4`(PR #6 head)를 새 detached 워크트리로 만들어 확인 후 제거했다.
+- 통과: 새 워크트리에서 `network-policy --format codex-toml` 출력이 커밋된 `.codex/config.toml`과 동일. 전체 pytest 1881 passed, 2 skipped, Ruff 통과.
+- 차이: 커밋된 설정은 `api.openfigi.com`을 포함한 25개 호스트로, 시험 기록의 24개·`trial-config.toml`보다 하나 많다(13F 티커 매핑 목적지 추가 이후 생성). rollback 비교는 `trial-config.toml`이 아니라 커밋된 `.codex/config.toml` 기준으로 한다.
+- 미실행: 새 워크트리에서 독립 Codex·Orca 새 세션의 허용 연결·명시적 거부·직접 IP 연결 재현. Codex 사용 한도(2026-11-23 16:08 해제)로 세션을 시작하지 못했다. 이 항목 전까지 아카이브하지 않는다.
