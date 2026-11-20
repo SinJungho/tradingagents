@@ -4,7 +4,7 @@
 
 ## 현재 상태
 
-- 브랜치·PR: `work/local-improvements`의 작업은 fork(`SinJungho/tradingagents`) PR #1~#5로 `main`에 병합됐다(PR #5: 2026-11-18). `SinJungho/feat-13f-politician-portfolio`의 공시 스냅샷 skill과 샌드박스 네트워크 정책은 PR #6(열림)에 있다. `scoped-sandbox-network-access`는 새 워크트리 재현 검증과 아카이브가 남았다.
+- 브랜치·PR: fork(`SinJungho/tradingagents`) PR #1~#6이 `main`에 병합됐다(PR #6: 2026-11-20, merge commit `3586252` — 공시 스냅샷 skill, 샌드박스 네트워크 정책, 사용 한도 오류 분류). `scoped-sandbox-network-access`는 Codex·Orca 새 세션 재현 검증과 아카이브가 남았다(Codex 사용 한도 2026-11-23 16:08 해제 후).
 - 차트 선 긋기 제거(2026-11-18): 선 긋기와 차트 분석을 Yahoo Finance + 차트 MCP 연동으로 별도 구현해 이 저장소의 선 후보·구조선·피보나치·AVWAP·시나리오 경계와 기존 `chart-eval` 실험(가격 채점·9셀 토론), `technical-backtest`를 제거했다. 복구용 백업은 `results/_backup-line-drawing-removed-2026-11-18.tgz`(git 비추적). 상세: `openspec/changes/archive/2026-11-18-remove-chart-line-drawing/`.
 - 최신 기술 분석 제거(2026-11-18): `chart_eval`과 `technical-latest`(Toss 일봉 지표·차트·보고서)를 삭제했다. 차트 분석은 Yahoo Finance + 차트 MCP로 별도 진행한다. 상세: `openspec/changes/archive/2026-11-18-remove-technical-latest/`.
 - 공개 포트폴리오 공시(2026-11-18): `portfolio-disclosures` skill과 `scripts/disclosures.py`가 SEC 13F(수정 신고 반영, 분기 비교), 하원 연간 재무공시 주식 보유(금액 구간 순, 2026-11-19), 하원 PTR(RC4 암호화 PDF 포함)을 78칸 고정폭 표로 보여준다. 상원의원은 사용자 결정으로 범위에서 뺐다. 상세: `openspec/changes/archive/2026-11-18-portfolio-disclosures-tui/`.
