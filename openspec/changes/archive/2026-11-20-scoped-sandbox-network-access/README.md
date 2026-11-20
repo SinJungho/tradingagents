@@ -61,3 +61,18 @@
 - 통과: 새 워크트리에서 `network-policy --format codex-toml` 출력이 커밋된 `.codex/config.toml`과 동일. 전체 pytest 1881 passed, 2 skipped, Ruff 통과.
 - 차이: 커밋된 설정은 `api.openfigi.com`을 포함한 25개 호스트로, 시험 기록의 24개·`trial-config.toml`보다 하나 많다(13F 티커 매핑 목적지 추가 이후 생성). rollback 비교는 `trial-config.toml`이 아니라 커밋된 `.codex/config.toml` 기준으로 한다.
 - 미실행: 새 워크트리에서 독립 Codex·Orca 새 세션의 허용 연결·명시적 거부·직접 IP 연결 재현. Codex 사용 한도(2026-11-23 16:08 해제)로 세션을 시작하지 못했다. 이 항목 전까지 아카이브하지 않는다.
+
+## 기준 커밋 새 워크트리 재현 (2026-11-20, 완료)
+- 기준: fork `main` 병합 커밋 `3586252`. 신뢰 경로 `/Users/sinjungho/Project/trading-agents` 아래 새 detached 워크트리 `wt-sandbox-verify`. Codex CLI 0.170.0. 직접 연결 IP는 시험 직전 호스트에서 다시 조회(example.com 104.20.23.154·172.66.147.243, www.sec.gov 23.49.147.172).
+- 두 세션 모두 sandbox·profile·권한 override 없이 시작하고 내부에서 권한 상승·중첩 sandbox를 쓰지 않았다.
+
+| 항목 | 독립 Codex (`codex exec --ephemeral`) | Orca 기본 terminal 세션 (`orca agent launch --agent codex`) |
+|---|---|---|
+| 프로젝트 설정 | 프록시 환경 변수 8개 설정 | 프록시 환경 변수 8개 설정 |
+| 허용 House HTTPS | curl 0, HTTP 200 | curl 0, HTTP 200 |
+| 미허용 example.com | curl 56, CONNECT 403 | CONNECT 403 + `x-proxy-error: blocked-by-allowlist` (로컬 프록시 응답) |
+| 직접 연결, 공개 IP 고정 | 세 IP 모두 errno 1 (EPERM) | 세 IP 모두 errno 1 (EPERM) |
+
+- 독립 세션의 403은 로컬 프록시 CONNECT 단계 응답이며, 같은 설정의 Orca 세션에서 프록시의 allowlist 거부 헤더로 출처를 확인했다.
+- Orca 세션의 시작 훅 API 사전 진단은 새 워크트리에 `.venv`가 없어 실패로 표시됐다. 정책 적용 판정에는 쓰지 않는다.
+- 판정: 기준 커밋 새 워크트리에서 설정 적용·허용 연결·명시적 거부·직접 IP 연결 거부를 두 환경 모두 재현했다. 아카이브한다.
