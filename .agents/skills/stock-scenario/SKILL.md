@@ -9,11 +9,11 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 
 ## 1. 경로 선택
 
-기본 경로는 토스 실계좌 보유를 반영하는 `portfolio live`다. 매수·매도·비중 판단은 현재 보유와 통화별 비중을 알아야 의미가 있다. 실계좌 읽기 전용 조회는 저장소 소유자가 사전 허용했으므로 허용을 묻지 않는다.
+종목 종합 분석은 `--ticker`, 매수·보유·매도와 비중 판단은 현재 보유를 반영하는 `portfolio live`가 기본이다. 사용자가 보유 JSON을 지정하면 해당 파일을 사용한다. 실계좌 읽기 전용 조회는 저장소 소유자가 사전 허용했으므로 허용을 묻지 않는다.
 
 | 순서 | 상황 | 명령 |
 | --- | --- | --- |
-| 1 (기본) | 매수·보유·매도·비중 요청. 대상 종목은 보유 여부와 무관(미보유는 관심종목으로 분석) | `tradingagents portfolio live --symbol <T>` |
+| 1 | 매수·보유·매도·비중 요청. 대상 종목은 보유 여부와 무관(미보유는 관심종목으로 분석) | `tradingagents portfolio live --symbol <T>` |
 | 2 | 사용자가 실계좌 대신 보유 현황 JSON 파일을 줌 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --portfolio <file.json> --analysts market,news,fundamentals --save --no-show` |
 | 3 | 보유와 무관한 순수 종목 분석 요청 | `tradingagents --ticker <T> --date <YYYY-MM-DD> --analysts market,news,fundamentals --save --no-show` |
 
@@ -25,6 +25,7 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 - 2·3번은 터미널 없이 실행하므로 질문 단계를 모두 플래그로 채운다. 답이 빠지면 실행 전에 멈추고 필요한 플래그·변수 이름을 알려 준다. `--html`은 기본으로 `complete_report.html`도 만든다. 모델·출력 언어·토론 횟수는 `TRADINGAGENTS_LLM_PROVIDER`, `TRADINGAGENTS_DEEP_THINK_LLM`, `TRADINGAGENTS_QUICK_THINK_LLM`, `TRADINGAGENTS_OUTPUT_LANGUAGE`, `TRADINGAGENTS_MAX_DEBATE_ROUNDS`, `TRADINGAGENTS_MAX_RISK_ROUNDS`로 정한다(값은 `.env`에서 읽고 출력하지 않는다). 중간에 멈춘 실행은 `--checkpoint`로 이어간다.
 - 모든 실행은 다른 명령과 묶지 않은 단독 명령으로 하고, `--ticker`는 첫 인자로 둔다. 실제 LLM을 호출하므로 사용자가 분석을 요청했을 때만 실행한다.
 - 티커 목록의 결정론적 팩터 신호나 시장 전체 후보가 필요하면 `stock-discovery` skill로 먼저 후보를 고르고, 사용자가 고른 종목만 이 흐름으로 분석한다.
+- 종합 분석에 포함되는 기술적 분석은 기존 Market Analyst 도구를 사용한다. 차트나 기술적 분석 자체가 요청 결과면 `tratto-chart`를 사용한다.
 
 ## 2. 결과 읽기
 
@@ -50,8 +51,8 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 ## 5. 보고 형식
 
 1. 결론 한 줄: 최종 등급(Buy/Overweight/Hold/Underweight/Sell)과 근거 요약
-2. 근거: 기본 경량 경로는 Market·News·Fundamentals 분석과 포트폴리오 종합의 핵심을 보고한다. 전체 워크플로를 요청한 경우에만 Bull/Bear 쟁점, Research Manager, Trader·Risk·Portfolio Manager 결정을 포함한다. 수치에는 출처와 기준 시각을 붙인다.
-3. 포트폴리오 영향: 현재 비중, 추가 매수·매도 시 통화별 비중 변화(계산 가능한 경우만). 거래 표현은 제공 보유 상태에 맞춘다(미보유: 신규 진입, 보유: 추가·유지·축소·청산, 음수 수량: 숏). 보유 정보가 없으면 보유를 가정하지 않는다.
+2. 근거: 기본 경량 경로는 Market·News·Fundamentals 분석과 포트폴리오 종합의 핵심을 보고한다. `--ticker`와 `--full-workflow`는 Bull/Bear 쟁점, Research Manager, Trader·Risk·Portfolio Manager 결정을 포함한다. 수치에는 출처와 기준 시각을 붙인다.
+3. 포트폴리오 영향: 현재 비중과 추가 매수·매도 시 통화별 비중 변화를 계산 가능한 경우에 제시한다. 보유 수량이나 평가액이 미확인이면 비중 조정 수치를 유보한다. 거래 표현은 제공 보유 상태에 맞춘다(미보유: 신규 진입, 보유: 추가·유지·축소·청산, 음수 수량: 숏).
 4. 조건부 시나리오: 매수·보유·매도 각각의 실행 조건(가격 구간, 지표, 이벤트), 손절·재검토·무효화 조건. `portfolio live` 경로는 단기·중기·장기 × 상승·기본·하락 구조를 따른다.
 5. 자료 기준 시각, 품질 경고, 자료 조회 실패와 미확인 자료
 
