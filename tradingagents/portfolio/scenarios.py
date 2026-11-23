@@ -162,6 +162,21 @@ class PortfolioScenarioReport:
     unmapped_holdings: int
     omitted_symbols: int
     trading_decisions: tuple[TradingDecisionResult, ...] = ()
+    synthesis_failure: ScenarioSynthesisFailure | None = None
+
+
+@dataclass(frozen=True)
+class ScenarioSynthesisFailure:
+    stage: Literal["format_correction"]
+    check: str
+
+
+class ScenarioValidationError(ValueError):
+    """A safe, stable check identifier for a rejected model response."""
+
+    def __init__(self, check: str) -> None:
+        self.check = check
+        super().__init__(check)
 
 
 class _ScenarioState(TypedDict, total=False):
@@ -772,23 +787,23 @@ def _extract_text(response: object) -> str:
     if isinstance(content, list):
         parts = [item["text"] for item in content if isinstance(item, Mapping) and isinstance(item.get("text"), str)]
         return "\n".join(parts).strip()
-    raise ValueError("scenario model returned non-text content")
+    raise ScenarioValidationError("response.text_content")
 
 
 def _case_from_payload(payload: object) -> ScenarioCase:
     if not isinstance(payload, Mapping):
-        raise ValueError("scenario case must be an object")
+        raise ScenarioValidationError("case.object")
 
     def required_text(key: str) -> str:
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
-            raise ValueError(f"scenario case is missing {key}")
+            raise ScenarioValidationError(f"case.{key}.required_text")
         return _sanitize_text(value, limit=_MAX_RESEARCH_CHARS)
 
     def text_list(key: str) -> tuple[str, ...]:
         value = payload.get(key)
         if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"scenario case {key} must be a string list")
+            raise ScenarioValidationError(f"case.{key}.string_list")
         return tuple(
             text for item in value if (text := _sanitize_text(item, limit=1000))
         )
@@ -811,28 +826,31 @@ def _parse_synthesis(
     content = content.strip()
     if content.startswith("```") and content.endswith("```"):
         content = content.partition("\n")[2].rsplit("```", 1)[0].strip()
-    payload = json.loads(content)
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        raise ScenarioValidationError("response.json_syntax") from None
     if not isinstance(payload, Mapping) or not isinstance(payload.get("horizons"), list):
-        raise ValueError("scenario synthesis must contain a horizon list")
+        raise ScenarioValidationError("synthesis.horizons_list")
     summary = payload.get("summary")
     if not isinstance(summary, str) or not summary.strip():
-        raise ValueError("scenario synthesis is missing its summary")
+        raise ScenarioValidationError("synthesis.summary.required_text")
     # Models write "Short-term", "medium (1-6 months)" or reorder; match on the leading word.
     by_name: dict[str, object] = {}
     for row in payload["horizons"]:
         raw = (row.get("name") or row.get("horizon")) if isinstance(row, Mapping) else None
         match = re.match(r"[a-z]+", raw.strip().lower()) if isinstance(raw, str) else None
         if match is None or match.group() in by_name:
-            raise ValueError("scenario synthesis horizons do not match the configured horizons")
+            raise ScenarioValidationError("synthesis.horizon_names")
         by_name[match.group()] = row
     if sorted(by_name) != sorted(horizon.name for horizon in config.horizons):
-        raise ValueError("scenario synthesis horizons do not match the configured horizons")
+        raise ScenarioValidationError("synthesis.horizon_names")
     rows = [by_name[horizon.name] for horizon in config.horizons]
 
     output = []
     for horizon, row in zip(config.horizons, rows, strict=True):
         if not isinstance(row, Mapping):
-            raise ValueError("scenario horizon must be an object")
+            raise ScenarioValidationError("synthesis.horizon_object")
         output.append(
             HorizonScenarios(
                 name=horizon.name,
@@ -1052,10 +1070,29 @@ class PortfolioScenarioWorkflow:
         response = self.scenario_llm.invoke(messages)
         try:
             summary, horizons = _parse_synthesis(_extract_text(response), self.config)
-        except ValueError:
+        except ScenarioValidationError:
             retry_messages = [*messages, HumanMessage(content=_SYNTHESIS_RETRY_INSTRUCTION)]
             retry_response = self.scenario_llm.invoke(retry_messages)
-            summary, horizons = _parse_synthesis(_extract_text(retry_response), self.config)
+            try:
+                summary, horizons = _parse_synthesis(
+                    _extract_text(retry_response), self.config
+                )
+            except ScenarioValidationError as exc:
+                return {
+                    "report": PortfolioScenarioReport(
+                        status="partial",
+                        portfolio_analysis_status=portfolio_status,
+                        summary=None,
+                        horizons=(),
+                        symbol_research=research,
+                        symbols_researched=symbols_researched,
+                        unmapped_holdings=unmapped,
+                        omitted_symbols=omitted,
+                        synthesis_failure=ScenarioSynthesisFailure(
+                            stage="format_correction", check=exc.check
+                        ),
+                    )
+                }
         partial = (
             any(result.status != "analyzed" for result in research)
             or unmapped > 0

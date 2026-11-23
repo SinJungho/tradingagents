@@ -264,6 +264,11 @@ class HorizonReport(_ReportModel):
     downside: ScenarioCaseReport
 
 
+class ScenarioSynthesisFailureReport(_ReportModel):
+    stage: Literal["format_correction"]
+    check: str
+
+
 class ScenarioReport(_ReportModel):
     status: str
     portfolio_analysis_status: str
@@ -274,6 +279,7 @@ class ScenarioReport(_ReportModel):
     unmapped_holdings: int
     omitted_symbols: int
     trading_decisions: list[TradingDecisionReport] = Field(default_factory=list)
+    synthesis_failure: ScenarioSynthesisFailureReport | None = None
 
 
 class PortfolioReport(_ReportModel):
@@ -449,6 +455,13 @@ def build_portfolio_report(
             symbols_researched=scenarios.symbols_researched,
             unmapped_holdings=scenarios.unmapped_holdings,
             omitted_symbols=scenarios.omitted_symbols,
+            synthesis_failure=(
+                ScenarioSynthesisFailureReport.model_validate(
+                    scenarios.synthesis_failure.__dict__
+                )
+                if scenarios.synthesis_failure is not None
+                else None
+            ),
         )
 
     failures = source_failures or []
@@ -770,6 +783,12 @@ def render_markdown(report: PortfolioReport) -> str:
     else:
         lines.append(f"- 상태: `{report.scenarios.status}`")
         lines.append(f"- 종목별 조사 건수: {report.scenarios.symbols_researched}")
+        if report.scenarios.synthesis_failure is not None:
+            lines.append(
+                "- 시나리오 종합 실패: "
+                f"단계 `{report.scenarios.synthesis_failure.stage}`, "
+                f"검증 항목 `{report.scenarios.synthesis_failure.check}`"
+            )
         if report.scenarios.summary:
             lines.extend(["", report.scenarios.summary])
         for horizon in report.scenarios.horizons:

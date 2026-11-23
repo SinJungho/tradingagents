@@ -482,8 +482,9 @@ def test_synthesis_accepts_horizon_name_variants_in_configured_order(names, key)
 def test_synthesis_rejects_missing_or_duplicate_horizons(names):
     from tradingagents.portfolio.scenarios import _parse_synthesis
 
-    with pytest.raises(ValueError, match="horizons do not match"):
+    with pytest.raises(ValueError) as exc:
         _parse_synthesis(_synthesis_with_names(names), ScenarioConfig())
+    assert exc.value.check == "synthesis.horizon_names"
 
 
 def test_synthesis_retries_once_after_invalid_response_without_echoing_it():
@@ -506,15 +507,52 @@ def test_synthesis_retries_once_after_invalid_response_without_echoing_it():
     assert first_response not in "\n".join(message.content for message in retry_messages)
 
 
-def test_synthesis_raises_after_one_invalid_response_retry():
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        ("investment_rationale", None),
+        ("evidence", "not a string list"),
+    ],
+)
+def test_synthesis_retries_missing_or_wrong_typed_case_fields(field, invalid_value):
+    invalid = json.loads(_response())
+    case = invalid["horizons"][0]["upside"]
+    if invalid_value is None:
+        case.pop(field)
+    else:
+        case[field] = invalid_value
+    invalid_response = json.dumps(invalid)
+    llm = MockScenarioLLM((invalid_response, _response()))
+    research_calls = []
+    workflow = PortfolioScenarioWorkflow(
+        lambda item: research_calls.append(item.symbol) or "Synthetic evidence.", llm
+    )
+
+    report = workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+
+    assert report.summary == "Scenarios are conditional on the supplied evidence."
+    assert len(llm.calls) == 2
+    assert research_calls == ["SYNTH"]
+    assert invalid_response not in "\n".join(message.content for message in llm.calls[1])
+
+
+def test_synthesis_reports_second_invalid_response_and_preserves_symbol_research():
     first_response = "synthetic malformed response: {first}"
     second_response = "synthetic malformed response: {second}"
     llm = MockScenarioLLM((first_response, second_response))
     workflow = PortfolioScenarioWorkflow(lambda _item: "Synthetic evidence.", llm)
 
-    with pytest.raises(ValueError):
-        workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+    report = workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
 
+    assert report.status == "partial"
+    assert report.summary is None
+    assert report.horizons == ()
+    assert [(row.symbol, row.status, row.analysis) for row in report.symbol_research] == [
+        ("SYNTH", "analyzed", "Synthetic evidence.")
+    ]
+    assert report.synthesis_failure is not None
+    assert report.synthesis_failure.stage == "format_correction"
+    assert report.synthesis_failure.check == "response.json_syntax"
     assert len(llm.calls) == 2
     retry_prompt = "\n".join(message.content for message in llm.calls[1])
     assert first_response not in retry_prompt

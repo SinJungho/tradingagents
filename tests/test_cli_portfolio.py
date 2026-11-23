@@ -30,6 +30,7 @@ from tradingagents.portfolio.reporting import (
 )
 from tradingagents.portfolio.scenarios import (
     PortfolioScenarioReport,
+    ScenarioSynthesisFailure,
     SymbolResearchResult,
     TradingDecisionResult,
 )
@@ -691,6 +692,53 @@ def test_symbol_api_failure_category_is_rendered_without_exception_text():
 
     assert "시간 초과 (재시도 가능: 예)" in markdown
     assert "synthetic" not in markdown.lower()
+
+
+def test_synthesis_validation_failure_and_completed_research_are_reported_safely():
+    now = datetime.now(UTC)
+    holdings = Holdings((_holding(now),), now)
+    analytics = analyze_portfolio(holdings, (), None, as_of=now)
+    scenarios = PortfolioScenarioReport(
+        status="partial",
+        portfolio_analysis_status="unknown",
+        summary=None,
+        horizons=(),
+        symbol_research=(
+            SymbolResearchResult(
+                "SYNTH", "analyzed", "Synthetic research result", "US", ()
+            ),
+        ),
+        symbols_researched=1,
+        unmapped_holdings=0,
+        omitted_symbols=0,
+        synthesis_failure=ScenarioSynthesisFailure(
+            stage="format_correction", check="case.evidence.string_list"
+        ),
+    )
+    report = build_portfolio_report(
+        mode="live",
+        generated_at=now,
+        request=RequestScope(
+            orders_from=now.date(),
+            orders_to=now.date(),
+            max_pages_per_status=3,
+            max_symbols=10,
+            selected_symbols=["SYNTH"],
+            symbol_selection="explicit",
+        ),
+        analytics=analytics,
+        holdings=holdings,
+        scenarios=scenarios,
+    )
+
+    markdown = render_markdown(report)
+    serialized = report.model_dump_json()
+
+    assert "단계 `format_correction`" in markdown
+    assert "검증 항목 `case.evidence.string_list`" in markdown
+    assert "Synthetic research result" in markdown
+    assert '"check":"case.evidence.string_list"' in serialized
+    assert "raw model response" not in markdown.lower()
 
 
 def test_symbol_research_graph_runs_configured_analysts_and_tools_without_debates():

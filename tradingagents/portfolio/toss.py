@@ -157,7 +157,11 @@ class TossPortfolioAdapter:
             raise ValueError("symbols must contain only letters, digits, '.', or '-'.")
         if len(set(symbols)) != len(symbols):
             raise ValueError("symbols must be unique.")
-        response = self._get("/api/v1/prices", params={"symbols": ",".join(symbols)})
+        response = self._get(
+            "/api/v1/prices",
+            params={"symbols": ",".join(symbols)},
+            retry_unauthorized=True,
+        )
         result = self._result(response)
         if not isinstance(result, list):
             raise TossAPIError("returned an invalid prices response", status=response.status_code)
@@ -391,6 +395,7 @@ class TossPortfolioAdapter:
         *,
         account_seq: int | None = None,
         params: dict[str, str | int | bool] | None = None,
+        retry_unauthorized: bool = False,
     ) -> requests.Response:
         url = f"{_HOST}{path}"
         _validate_business_request("GET", url)
@@ -401,6 +406,7 @@ class TossPortfolioAdapter:
             headers["X-Tossinvest-Account"] = str(account_seq)
 
         retries = 0
+        authentication_retried = False
         while True:
             headers["Authorization"] = f"Bearer {self._get_token()}"
             try:
@@ -425,6 +431,9 @@ class TossPortfolioAdapter:
             if response.status_code == 401:
                 self._access_token = None
                 self._token_expires_at = 0.0
+                if retry_unauthorized and not authentication_retried:
+                    authentication_retried = True
+                    continue
             if response.status_code >= 500 and retries < _MAX_RETRIES:
                 retries += 1
                 continue

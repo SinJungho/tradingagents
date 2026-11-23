@@ -45,10 +45,11 @@ class FakeSession:
             if isinstance(self.token_response, Exception):
                 raise self.token_response
             return self.token_response
-        return FakeResponse(payload=self.token_payload)
+        payload = self.token_payload.pop(0) if isinstance(self.token_payload, list) else self.token_payload
+        return FakeResponse(payload=payload)
 
     def get(self, url, **kwargs):
-        self.gets.append((url, kwargs))
+        self.gets.append((url, {**kwargs, "headers": dict(kwargs.get("headers", {}))}))
         if not self.responses:
             raise AssertionError("unexpected GET")
         response = self.responses.pop(0)
@@ -170,22 +171,63 @@ def test_token_server_failure_retries_only_to_the_configured_bound():
     assert "synthetic-account-id" not in str(exc.value)
 
 
-def test_authentication_rejection_is_not_repeated():
+def test_current_price_retries_once_after_unauthorized_with_a_fresh_token():
     session = FakeSession(
+        token_payload=[
+            {"access_token": "synthetic-stale-token", "expires_in": 3600},
+            {"access_token": "synthetic-fresh-token", "expires_in": 3600},
+        ],
         responses=[
             FakeResponse(401, {"error": {"code": "invalid-token"}}),
-            _ok([]),
+            _ok([{"symbol": "SYNUS", "lastPrice": "101.5", "currency": "USD"}]),
+        ]
+    )
+    adapter = TossPortfolioAdapter("id", "secret", session=session)
+
+    prices = adapter.get_prices(["SYNUS"])
+
+    assert prices[0].last_price == Decimal("101.5")
+    assert len(session.posts) == 2
+    assert len(session.gets) == 2
+    assert [call[1]["headers"]["Authorization"] for call in session.gets] == [
+        "Bearer synthetic-stale-token",
+        "Bearer synthetic-fresh-token",
+    ]
+
+
+def test_current_price_stops_after_second_401_and_refreshes_next_call():
+    session = FakeSession(
+        token_payload=[
+            {"access_token": "synthetic-stale-token", "expires_in": 3600},
+            {"access_token": "synthetic-rejected-token", "expires_in": 3600},
+            {"access_token": "synthetic-next-token", "expires_in": 3600},
+        ],
+        responses=[
+            FakeResponse(401, {"error": {"code": "invalid-token", "message": "private"}}),
+            FakeResponse(401, {"error": {"code": "invalid-token", "message": "private"}}),
+            _ok([{"symbol": "SYNUS", "lastPrice": "101.5", "currency": "USD"}]),
         ]
     )
     adapter = TossPortfolioAdapter("id", "secret", session=session)
 
     with pytest.raises(TossAPIError) as exc:
-        adapter.get_accounts()
+        adapter.get_prices(["SYNUS"])
 
+    assert exc.value.status == 401
     assert exc.value.category == "authentication"
     assert exc.value.retryable is False
-    assert len(session.posts) == 1
-    assert len(session.gets) == 1
+    assert len(session.posts) == 2
+    assert len(session.gets) == 2
+    assert [call[1]["headers"]["Authorization"] for call in session.gets] == [
+        "Bearer synthetic-stale-token",
+        "Bearer synthetic-rejected-token",
+    ]
+    assert "private" not in str(exc.value)
+
+    assert adapter.get_prices(["SYNUS"])[0].last_price == Decimal("101.5")
+    assert len(session.posts) == 3
+    assert len(session.gets) == 3
+    assert session.gets[-1][1]["headers"]["Authorization"] == "Bearer synthetic-next-token"
 
 
 def test_cached_token_is_reissued_after_expiry(monkeypatch):
@@ -723,10 +765,7 @@ def test_unauthorized_error_body_never_appears_in_exception():
                 401,
                 {"error": {"code": "invalid-token", "message": "synthetic account response"}},
             ),
-            FakeResponse(
-                401,
-                {"error": {"code": "invalid-token", "message": "synthetic account response"}},
-            ),
+            _ok([]),
         ]
     )
     adapter = TossPortfolioAdapter("synthetic-id", "synthetic-secret", session=session)
@@ -736,3 +775,7 @@ def test_unauthorized_error_body_never_appears_in_exception():
 
     assert "synthetic account response" not in str(exc.value)
     assert "synthetic-secret" not in str(exc.value)
+
+    assert adapter.get_accounts().accounts == ()
+    assert len(session.posts) == 2
+    assert len(session.gets) == 2
