@@ -701,9 +701,10 @@ def _make_scenario_workflow(
     from tradingagents.default_config import DEFAULT_CONFIG
 
     if full_workflow:
+        from tradingagents.agents.context import is_us_equity_or_etf, resolve_instrument_identity
         from tradingagents.agents.rating import run_rating
         from tradingagents.dataflows.config import run_config
-        from tradingagents.graph.trading_graph import TradingAgentsGraph
+        from tradingagents.graph.trading_graph import TradingAgentsGraph, load_market_research
 
         selected_analysts = ("market", "social", "news", "fundamentals")
         graph_config = copy.deepcopy(DEFAULT_CONFIG)
@@ -717,16 +718,25 @@ def _make_scenario_workflow(
         # Portfolio reports must not read or write the per-symbol decision memory.
         full_graph = graph.graph_setup.setup_graph(selected_analysts, memory_node=None).compile()
         decisions: list[TradingDecisionResult] = []
+        market_research = None
+        now = _now()
+        trade_date = _today_kst(now).isoformat()
 
         def analyze_full_workflow(research_input) -> str:
+            nonlocal market_research
             ticker = research_input.symbol
-            trade_date = _today_kst().isoformat()
             initial_state = graph.create_run_state(
                 ticker,
                 trade_date,
                 asset_type="stock",
                 portfolio=portfolio_context,
             )
+            if research_input.market_country == "US" and is_us_equity_or_etf(
+                ticker, resolve_instrument_identity(ticker)
+            ):
+                if market_research is None:
+                    market_research = load_market_research(trade_date, now)
+                initial_state["market_research"] = market_research
             with run_config(graph.config):
                 state = full_graph.invoke(
                     initial_state,
@@ -785,6 +795,7 @@ def _make_scenario_workflow(
                 max_symbol_researches=max_symbols,
                 horizons=horizons,
             ),
+            get_market_research=lambda: market_research,
         )
         return workflow, decisions
 

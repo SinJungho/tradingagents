@@ -124,6 +124,14 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
     save_path.mkdir(parents=True, exist_ok=True)
     parts = _report_parts(final_state)
     quality_warnings = review_output(final_state, ticker, parts)
+    if research := final_state.get("market_research"):
+        from tradingagents.market_report import render_market_research
+
+        parts.append(("VII. US Market Research", "7_us_market_research", [
+            ("US Market Evidence", "evidence.md", render_market_research(research)),
+        ]))
+    else:
+        (save_path / "7_us_market_research" / "evidence.md").unlink(missing_ok=True)
     sections = []
     for heading, folder, written in parts:
         (save_path / folder).mkdir(exist_ok=True)

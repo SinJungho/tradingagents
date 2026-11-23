@@ -40,6 +40,61 @@ def test_naive_clock_rejected():
         mr.report_window(datetime(2026, 11, 12))
 
 
+@pytest.mark.parametrize(('trade_date', 'run_at', 'day', 'cutoff_hour'), [
+    ('2026-11-27', '2026-12-01T16:30:00-05:00', '2026-11-27', 13),
+    ('2026-11-27', '2026-11-27T12:30:00-05:00', '2026-11-27', 12),
+    ('2026-11-28', '2026-11-29T10:30:00-05:00', '2026-11-27', 13),
+])
+def test_stock_and_report_share_daily_collection_at_different_cutoffs(
+    monkeypatch, trade_date, run_at, day, cutoff_hour,
+):
+    def daily(provider, window, calendar, add, missing):
+        add('지수', '검증한 관측', 5, 'https://example.com/confirmed',
+            observed_at=f"{window['day']}T11:00:00-05:00")
+        add('매크로', '마감 후에 수정한 값', 99999, 'https://example.com/later',
+            observed_at=f"{window['day']}T11:00:00-05:00",
+            published=f"{window['day']}T14:00:00-05:00", calculations=[99999])
+        return None
+
+    def investigations(provider, window, calendar, evidence, add):
+        return [{'status': 'not_run', 'label': '추가 점검', 'reason': '기준 미충족'}]
+
+    monkeypatch.setattr(mr, 'collect_daily', daily)
+    monkeypatch.setattr(mr, 'collect_investigations', investigations)
+    stock = mr.collect_market_research(trade_date, now=datetime.fromisoformat(run_at), provider=object())
+    assert stock['window']['day'] == day
+    assert pd.Timestamp(stock['window']['cutoff']).tz_convert(mr.ET).hour == cutoff_hour
+    assert stock['evidence'][0]['value'] == 5
+    assert stock['evidence'][1]['status'] == 'unavailable'
+    assert '99999' not in json.dumps(stock)
+    assert '미실행' in mr.render_market_research(stock)
+    report = mr.collect_report(object(), datetime.fromisoformat('2026-11-27T20:30:00-05:00'))
+    assert report['evidence'][1]['value'] == 99999
+    assert '추가 점검' in mr.render_markdown(report)
+
+
+def test_local_only_index_data_stays_in_local_report(monkeypatch):
+    def daily(provider, window, calendar, add, missing):
+        add('매크로', 'ICE OAS', 987.654, 'https://example.com/local', local_use_only=True,
+            change_bp=432.1, previous_value=567.8)
+        return None
+
+    monkeypatch.setattr(mr, 'collect_daily', daily)
+    monkeypatch.setattr(mr, 'collect_investigations', lambda *args: [])
+    now = datetime.fromisoformat('2026-11-20T20:30:00-05:00')
+    report = mr.collect_report(object(), now)
+    assert report['evidence'][0]['value'] == 987.654
+    assert '987.654' in mr.render_markdown(report)
+    llm = Mock(invoke=Mock(side_effect=RuntimeError('capture only')))
+    mr.write_narrative(report, llm=llm)
+    model_input = json.loads(llm.invoke.call_args.args[0][1][1])
+    assert model_input['evidence'][0]['status'] == 'partial'
+    research = mr.collect_market_research('2026-11-20', now=now, provider=object())
+    assert research['evidence'][0]['value'] is None and research['evidence'][0]['id'] == 'E0001'
+    for captured in (json.dumps(model_input), json.dumps(research), mr.market_research_context(report)):
+        assert all(value not in captured for value in ('987.654', '432.1', '567.8'))
+
+
 def test_public_market_data_prefers_spy_and_falls_back_to_wikipedia(monkeypatch):
     spy = SimpleNamespace(tickers=("AAA",), source=mr.SPY_HOLDINGS_SOURCE)
     wikipedia = SimpleNamespace(tickers=("BBB",), source="https://en.wikipedia.org/wiki/sp500")
@@ -259,7 +314,7 @@ def test_collection_bounds_sources_and_dedup(report):
     assert 'Future secret' not in encoded and 'Undated secret' not in encoded
     # The sentinel serializes as 9999.0; bare '9999' also matches retrieved_at microseconds.
     assert '9999.0' not in encoded
-    futures = next(r for r in rows if r['label'].startswith('ES=F'))
+    futures = next(r for r in rows if r['section'] == '장후' and r['label'].startswith('ES=F'))
     assert futures['value'] == {'regular_close': 100., 'post_price': 102., 'change_pct': pytest.approx(2)}
     assert pd.Timestamp(futures['observed_at']) <= pd.Timestamp(report['window']['cutoff'])
     sectors = [r for r in rows if r['section'] == '업종']
@@ -500,23 +555,44 @@ def test_html_tables_links_toc_and_escaping(report, tmp_path):
     assert saved['quality_warnings'] == mr.quality_warnings(report)
 
 
+def _perspective_claims(evidence_id):
+    return [
+        {'section': mr.LONG_TERM, 'text': '신용 여건의 확인이 필요하다.',
+         'evidence_ids': [evidence_id], 'change_condition': '이익 전망이 하향되면 재검토한다.'},
+        {'section': mr.TRADER, 'text': '가격 반응을 확인한다.',
+         'evidence_ids': [evidence_id], 'change_condition': '업종 상대 성과가 역전되면 재검토한다.'},
+    ]
+
+
 def test_fake_llm_evidence_validation(report):
     valid = next(e['id'] for e in report['evidence'] if e['status'] == 'available')
     partial = next(e for e in report['evidence'] if e['section'] == '업종')
     partial['status'] = 'partial'
     partial['reason'] = 'synthetic close proxy'
     llm = Mock(invoke=Mock(return_value=SimpleNamespace(content=json.dumps([
-        {'section': '핵심 요약', 'text': '해석: 확인된 가격 흐름이며 원인은 미확인입니다.', 'evidence_ids': [partial['id']]}]))))
+        {'section': '핵심 요약', 'text': '해석: 확인된 가격 흐름이며 원인은 미확인입니다.', 'evidence_ids': [partial['id']]},
+        *_perspective_claims(valid),
+    ]))))
     mr.write_narrative(report, llm=llm)
     assert report['llm_status'] == 'available'
     prompt = json.loads(llm.invoke.call_args.args[0][1][1])
     assert any(item['id'] == partial['id'] and item['status'] == 'partial' for item in prompt['evidence'])
     assert all('calculations' not in item for item in prompt['evidence'])
+    rendered = mr.render_markdown(report)
+    assert f'## {mr.LONG_TERM}' in rendered and f'## {mr.TRADER}' in rendered
+    assert '이익 전망이 하향되면 재검토한다' in rendered
     llm.invoke.return_value.content = json.dumps([{'section': '핵심 요약', 'text': '99% 상승 전망', 'evidence_ids': [valid]}])
     report['narrative'] = []
     mr.write_narrative(report, llm=llm)
     assert report['llm_status'] == 'failed' and not report['narrative']
     assert any('근거 연결' in w for w in mr.quality_warnings(report))
+
+
+def test_narrative_rejects_missing_perspective_or_condition():
+    claims = _perspective_claims('E0001')
+    assert mr.narrative_problem(json.dumps(claims[:1]), {'E0001'}) == '투자 관점 누락'
+    claims[1].pop('change_condition')
+    assert mr.narrative_problem(json.dumps(claims), {'E0001'}) == '해석 2: 판단 변경 조건 누락'
 
 
 def test_future_macro_rejected_and_stale_reported():
@@ -991,7 +1067,9 @@ def test_narrative_number_check_allows_instrument_names_but_not_figures(report):
 
     def narrate(text):
         llm = Mock(invoke=Mock(return_value=SimpleNamespace(content=json.dumps([
-            {'section': '핵심 요약', 'text': text, 'evidence_ids': [valid]}]))))
+            {'section': '핵심 요약', 'text': text, 'evidence_ids': [valid]},
+            *_perspective_claims(valid),
+        ]))))
         mr.write_narrative(report, llm=llm)
         return report['llm_status']
 
@@ -1166,7 +1244,8 @@ def test_early_close_day_judges_futures_and_stocks_against_their_real_stop():
 def test_narrative_retries_once_with_the_reason_and_never_echoes_the_response(report):
     valid = report['evidence'][0]['id']
     bad = json.dumps([{'section': '핵심 요약', 'text': '지수가 2% 하락했다 SECRET-ECHO', 'evidence_ids': [valid]}])
-    good = json.dumps([{'section': '핵심 요약', 'text': '지수가 하락했다.', 'evidence_ids': [valid]}])
+    good = json.dumps([{'section': '핵심 요약', 'text': '지수가 하락했다.', 'evidence_ids': [valid]},
+                       *_perspective_claims(valid)])
     llm = Mock(invoke=Mock(side_effect=[SimpleNamespace(content=bad), SimpleNamespace(content=good)]))
     mr.write_narrative(report, llm=llm)
     assert report['llm_status'] == 'available' and 'narrative_rejected' not in report

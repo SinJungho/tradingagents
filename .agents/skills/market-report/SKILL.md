@@ -9,7 +9,7 @@ description: 미국 시장 마감·장후 보고서를 생성하고 결과를 �
 
 ## 1. 실행 조건
 
-- 대상 거래일은 실행 시각으로 정해진다: 동부시간 20:00 이후면 그날, 이전이면 직전 완료 거래일. 날짜 지정 옵션은 없다. 먼저 `TZ=America/New_York date`로 확인하고 대상일을 사용자에게 알린다.
+- 동부시간 20:00 기준을 통과한 가장 최근 거래일을 사용한다. 주말·휴장일은 거래소 달력을 적용한다. 날짜 지정 옵션은 없다. 실행 시각을 `TZ=America/New_York date`로 확인하고 대상일을 사용자에게 알린다.
 - 정상 생성 시간대는 대상일 20:00 ET 이후부터 다음 정규장 개장(09:30 ET) 전까지다(한국시간 겨울 기준 다음 날 오전 10시~오후 11시 30분). 개장 뒤 생성하면 공급자의 전날 장후 5분 봉과 최신 뉴스 범위가 줄고, 보고서 머리말에 늦은 생성 주의가 붙는다. 사용자가 특정 날짜를 원하는데 시간대가 지났으면 그 한계를 먼저 알린다.
 - LLM 해석은 사용자가 보고서 생성을 명시적으로 요청했을 때만 켠다. 개발 검증·재현성 확인은 `--no-llm`으로 한다.
 - `discover --universe all` 같은 대량 Yahoo 실행과 동시에 돌리지 않는다(같은 IP의 Yahoo 제한으로 시장 폭·매크로가 미확인이 된다).
@@ -19,7 +19,7 @@ description: 미국 시장 마감·장후 보고서를 생성하고 결과를 �
 다른 명령과 묶지 않은 단독 명령으로 실행한다.
 
 ```bash
-tradingagents market-report --no-llm --output-dir results/market-reports   # 수치·출처만
+tradingagents market-report --no-llm --output-dir results/market-reports   # 공통 수집·계산·근거 출력
 tradingagents market-report --output-dir results/market-reports            # LLM 해석 포함
 ```
 
@@ -27,7 +27,7 @@ tradingagents market-report --output-dir results/market-reports            # LLM
 
 ## 3. 결과 해석
 
-`evidence.json`의 `window`(대상일·기준·다음 개장·`late_generation`), 항목 `status`, `quality_warnings`를 본다.
+`evidence.json`의 `window`(대상일·기준·다음 개장·`late_generation`), 항목 `status`, `investigations`의 시작 사유·상태·근거 ID, `quality_warnings`를 본다.
 
 | 상태 | 뜻 |
 | --- | --- |
@@ -40,6 +40,8 @@ tradingagents market-report --output-dir results/market-reports            # LLM
 - 판정 "불완전 보고서"는 `quality_warnings`가 하나라도 있으면 나온다. 경고마다 원인이 공급자 한계(예: 최신 뉴스 50건이 모두 구간 이후), 생성 시각, 실제 결함 중 무엇인지 구분해 보고한다.
 - LLM 해석은 근거 ID·숫자 금지 검증을 통과한 것만 들어간다. 실패하면 1회 재요청하고, 시도별 거부 사유가 `narrative_rejections`에 남는다.
 - 시장 폭은 SPY 보유 종목 대용치(공식 S&P 500 구성 아님), 실적 확인은 대형주 7종목 표본, 주간 실업수당 발표 시각은 미수집이다.
+
+[공통 시황 조사 기준](../references/us-market-research.md)의 기준 시각, 출처, 조사 시작 조건을 따른다. 평시는 자동 수집 결과를 사용한다. 급변·중요 근거 충돌·사용자 심층 요청은 공통 참조의 분담과 검증 절차를 적용한다. 미실행과 확인 실패를 각각 표시한다.
 
 ## 4. 보고 형식
 

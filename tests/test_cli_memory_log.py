@@ -157,9 +157,11 @@ def test_cli_run_uses_the_memory_log_like_propagate(tmp_path, monkeypatch):
 @pytest.mark.parametrize("resuming, said", [(True, "resuming"), (False, "starting fresh")])
 def test_the_cli_run_says_whether_it_resumed(tmp_path, monkeypatch, resuming, said):
     """The README promises the run view tells a resumed run from a fresh one."""
-    buffer = _run_cli(monkeypatch, tmp_path, _FakeGraph(resuming=resuming))
+    graph = _FakeGraph(resuming=resuming)
+    buffer = _run_cli(monkeypatch, tmp_path, graph)
 
     assert any(said in text.lower() for _, kind, text in buffer.messages if kind == "System")
+    assert any(call[0] == "create_run_state" for call in graph.calls) is not resuming
 
 
 @pytest.mark.unit

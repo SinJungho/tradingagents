@@ -8,6 +8,7 @@ the wiring: a restructure that drops a node, a tool or an edge fails here.
 from __future__ import annotations
 
 import copy
+import json
 import time
 
 import pandas as pd
@@ -120,12 +121,13 @@ def offline(monkeypatch, tmp_path):
     return called
 
 
-def _graph(tmp_path, monkeypatch, model, debug=False, **config):
+def _graph(tmp_path, monkeypatch, model, debug=False,
+           selected_analysts=("market", "social", "news", "fundamentals"), **config):
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     cfg.update(results_dir=str(tmp_path / "results"), data_cache_dir=str(tmp_path / "cache"),
                memory_log_path=str(tmp_path / "log.md"), **config)
     monkeypatch.setattr(trading_graph, "create_tier_client", lambda config, tier, **k: _Client(model))
-    return trading_graph.TradingAgentsGraph(config=cfg, debug=debug)
+    return trading_graph.TradingAgentsGraph(config=cfg, debug=debug, selected_analysts=selected_analysts)
 
 
 @pytest.mark.unit
@@ -164,6 +166,71 @@ def test_an_interrupted_run_resumes_from_its_checkpoint(tmp_path, monkeypatch, o
     _graph(tmp_path / "fresh", monkeypatch, full_run).propagate("NVDA", TRADE_DATE)
     # The resumed run makes only the calls the interrupted one had not completed.
     assert resumed_calls == len(full_run.calls) - (model.fail_at - 1)
+
+
+@pytest.mark.unit
+def test_us_market_research_survives_checkpoint_without_market_analyst(tmp_path, monkeypatch, offline):
+    collected = []
+    prompts = []
+    snapshot = {
+        "window": {"cutoff": "2026-01-09T21:00:00+00:00"},
+        "evidence": [{
+            "id": "E0001", "label": "Synthetic yield", "value": 4.23,
+            "status": "available", "source": "https://example.com/rates",
+            "source_kind": "official", "observation_period": TRADE_DATE, "published_at": None,
+        }],
+        "investigations": [],
+    }
+
+    def collect(day, now):
+        collected.append((day, now))
+        return snapshot
+
+    original_generate = ScriptedModel._generate
+
+    def generate(self, messages, **kwargs):
+        prompts.extend(str(message.content) for message in messages)
+        return original_generate(self, messages, **kwargs)
+
+    monkeypatch.setattr(trading_graph, "load_market_research", collect)
+    monkeypatch.setattr(ScriptedModel, "_generate", generate)
+    graph = _graph(
+        tmp_path, monkeypatch, ScriptedModel(fail_at=5), selected_analysts=("news",),
+        checkpoint_enabled=True, market_research_enabled=True,
+    )
+    with pytest.raises(RuntimeError, match="provider unavailable"):
+        graph.propagate("NVDA", TRADE_DATE)
+    final_state, rating = graph.propagate("NVDA", TRADE_DATE)
+
+    assert rating == "Overweight"
+    assert final_state["market_research"] == snapshot
+    assert [day for day, _ in collected] == [TRADE_DATE]
+    assert any("As the Portfolio Manager" in prompt and "E0001" in prompt for prompt in prompts)
+    state_path = next(tmp_path.glob("results/NVDA/TradingAgentsStrategy_logs/*.json"))
+    assert json.loads(state_path.read_text())["market_research"] == snapshot
+    report_path = graph.save_reports(final_state, "NVDA", tmp_path / "report")
+    assert "E0001" in report_path.read_text()
+    assert "E0001" in report_path.with_suffix(".html").read_text()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ticker", "asset_type", "identity"), [
+        ("0700.HK", "stock", {"exchange": "HKG", "quote_type": "EQUITY"}),
+        ("FOO.L", "stock", {"exchange": "LSE", "quote_type": "ETF"}),
+        ("FUNX", "stock", {"exchange": "NMS", "quote_type": "MUTUALFUND"}),
+        ("ES=F", "stock", {"exchange": "CME", "quote_type": "FUTURE"}),
+        ("BTC-USD", "crypto", {}),
+    ],
+)
+def test_cli_market_research_excludes_other_instruments(tmp_path, monkeypatch, ticker, asset_type, identity):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("market research must only run for US stocks and ETFs")
+
+    monkeypatch.setattr(trading_graph, "resolve_instrument_identity", lambda t: identity)
+    monkeypatch.setattr(trading_graph, "load_market_research", forbidden)
+    graph = _graph(tmp_path, monkeypatch, ScriptedModel(), market_research_enabled=True)
+    assert "market_research" not in graph.create_run_state(ticker, TRADE_DATE, asset_type)
 
 
 @pytest.mark.unit

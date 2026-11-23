@@ -1,9 +1,11 @@
 """Free public inputs for market reports; no broker access or model calls."""
 from __future__ import annotations
 
+import csv
 import re
 from datetime import UTC, datetime, time, timedelta
 from html.parser import HTMLParser
+from io import StringIO
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -15,15 +17,18 @@ from tradingagents.dataflows.vendors import fred, sec_edgar
 from tradingagents.dataflows.vendors.yahoo.news import _extract_article_data
 from tradingagents.stock_discovery import fetch_index_universe, fetch_spy_holdings_universe
 
-INDICES = {'^GSPC': 'S&P 500', '^IXIC': 'Nasdaq Composite', '^DJI': 'Dow Jones', '^RUT': 'Russell 2000', '^VIX': 'VIX'}
+INDICES = {'^GSPC': 'S&P 500', '^IXIC': 'Nasdaq Composite', '^DJI': 'Dow Jones', '^RUT': 'Russell 2000', '^VIX': 'VIX', '^VIX9D': 'VIX9D'}
 SECTORS = dict(zip(('XLC', 'XLY', 'XLP', 'XLE', 'XLF', 'XLV', 'XLI', 'XLB', 'XLRE', 'XLK', 'XLU'),
                    ('커뮤니케이션', '경기소비재', '필수소비재', '에너지', '금융', '헬스케어', '산업재', '소재', '부동산', '정보기술', '유틸리티'), strict=True))
-MARKETS = {'DX-Y.NYB': ('미 달러 지수(ICE DXY)', '지수'), 'CL=F': ('WTI 연속 선물', 'USD/배럴'), 'GC=F': ('금 연속 선물', 'USD/트로이온스')}
+MARKETS = {'DX-Y.NYB': ('미 달러 지수(ICE DXY)', '지수'), 'CL=F': ('WTI 연속 선물', 'USD/배럴'), 'GC=F': ('금 연속 선물', 'USD/트로이온스'), 'HG=F': ('구리 연속 선물', 'USD/파운드')}
 FUTURES = {'ES=F': 'S&P 500 선물', 'NQ=F': 'Nasdaq 100 선물', 'YM=F': 'Dow 선물', 'RTY=F': 'Russell 2000 선물'}
 # Yahoo returns only the newest N articles, so a late run can push the whole report window out.
 NEWS_FETCH_LIMIT = 50
 COMPANIES = ('AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA')
-MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS10': '10년 국채금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
+MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS5': '5년 국채금리', 'DGS10': '10년 국채금리', 'DFII10': '10년 실질금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
+TREASURY_RATES = frozenset({'DGS2', 'DGS5', 'DGS10', 'DFII10', 'T10Y2Y'})
+ALFRED_CSV_URL = 'https://alfred.stlouisfed.org/graph/alfredgraph.csv'
+BITSTAMP_OHLC_URL = 'https://www.bitstamp.net/api/v2/ohlc/{pair}/'
 BEA_RELEASES_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
 BEA_SCHEDULE_URL = 'https://www.bea.gov/news/schedule/full'
 CENSUS_CALENDAR_URL = 'https://www.census.gov/economic-indicators/calendar-listview-{year}.html'
@@ -125,6 +130,25 @@ class PublicMarketData:
             start=day, end=day + timedelta(days=1), interval='5m', prepost=True,
             auto_adjust=False, actions=False, raise_errors=True, timeout=15))
 
+    def crypto_candles(self, pair, end):
+        """Ask for a few timestamped candles around a historical UTC boundary."""
+        def fetch():
+            response = get_with_retry(BITSTAMP_OHLC_URL.format(pair=pair), timeout=10,
+                                      provider='Bitstamp', params={
+                                          'end': int(end.timestamp()), 'step': 300, 'limit': 3,
+                                          'exclude_current_candle': 'true',
+                                      })
+            result = response.json()['data']
+            if result['pair'].replace('/', '').casefold() != pair:
+                raise ValueError('Unexpected crypto pair')
+            frame = pd.DataFrame(result['ohlc'], columns=['timestamp', 'close'])
+            frame.index = pd.DatetimeIndex(pd.to_datetime(
+                pd.to_numeric(frame['timestamp'], errors='raise'), unit='s', utc=True))
+            if frame.index.has_duplicates:
+                raise ValueError('Duplicate crypto candle')
+            return frame.rename(columns={'close': 'Close'})[['Close']]
+        return self._once(('crypto_candles', pair, end), fetch)
+
     def universe(self):
         def fetch():
             try:
@@ -149,10 +173,44 @@ class PublicMarketData:
             points = [r for r in rows if r.get('value') not in ('.', '', None)]
             if not meta or not points:
                 raise ValueError('No observations')
-            return {'value': float(points[0]['value']), 'period': points[0]['date'],
+            data = {'value': float(points[0]['value']), 'period': points[0]['date'],
                     'unit': meta[0].get('units', '미확인'),
                     'frequency': meta[0].get('frequency', '미확인'), 'vintage': vintage}
+            if series == 'DGS10' and len(points) > 1:
+                data.update(previous=finite(points[1]['value']), previous_period=points[1]['date'])
+            return data
         return self._once(('macro', series, day), fetch)
+
+    def treasury_vintage(self, series, day):
+        """Public ALFRED download fallback for government Treasury series only."""
+        if series not in TREASURY_RATES:
+            raise ValueError('Unsupported ALFRED fallback series')
+        vintage = min((day - timedelta(days=1)).isoformat(), fred._fred_today())
+
+        def fetch():
+            response = get_with_retry(ALFRED_CSV_URL, timeout=12, provider='ALFRED', params={
+                'id': series, 'vintage_date': vintage, 'coed': vintage,
+                'cosd': (day - timedelta(days=18)).isoformat(),
+            })
+            column = series + '_' + vintage.replace('-', '')
+            reader = csv.DictReader(StringIO(response.text))
+            if reader.fieldnames != ['observation_date', column]:
+                raise ValueError('Requested ALFRED vintage missing')
+            points = {}
+            for row in reader:
+                observed = datetime.strptime(row['observation_date'], '%Y-%m-%d').date().isoformat()
+                value = finite(row[column])
+                if observed <= vintage and value is not None:
+                    points[observed] = value
+            if not points:
+                raise ValueError('No ALFRED vintage observations')
+            periods = sorted(points, reverse=True)
+            data = {'value': points[periods[0]], 'period': periods[0], 'unit': 'Percent',
+                    'frequency': 'Daily', 'vintage': vintage, 'source_api': ALFRED_CSV_URL}
+            if series == 'DGS10' and len(periods) > 1:
+                data.update(previous=points[periods[1]], previous_period=periods[1])
+            return data
+        return self._once(('treasury_vintage', series, day), fetch)
 
     def calendar(self, day):
         def fetch():

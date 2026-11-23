@@ -3,6 +3,7 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -74,6 +75,8 @@ def test_decision_context_contains_normalized_positions_but_not_buying_power():
 
 def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(monkeypatch):
     calls = []
+    now = datetime(2026, 11, 10, 10, tzinfo=UTC)
+    snapshot = {"window": {"cutoff": "2026-11-10T10:00:00+00:00"}, "evidence": [], "investigations": []}
 
     class FakeCompiledGraph:
         def compile(self):
@@ -114,14 +117,24 @@ def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(mon
             return state
 
     class FakeScenarioWorkflow:
-        def __init__(self, analyzer, _llm, _config):
+        def __init__(self, analyzer, _llm, _config, *, get_market_research):
             self.analyzer = analyzer
+            self.get_market_research = get_market_research
+
+    def collect(trade_date, as_of):
+        calls.append(("collect", trade_date, as_of))
+        return snapshot
 
     monkeypatch.setattr(
         "tradingagents.graph.trading_graph.TradingAgentsGraph", FakeTradingAgentsGraph
     )
+    monkeypatch.setattr("tradingagents.graph.trading_graph.load_market_research", collect)
+    monkeypatch.setattr(
+        "tradingagents.agents.context.resolve_instrument_identity",
+        lambda symbol: {"exchange": "NMS", "quote_type": "ETF" if symbol == "FUND" else "EQUITY"},
+    )
     monkeypatch.setattr(portfolio_cli, "PortfolioScenarioWorkflow", FakeScenarioWorkflow)
-    monkeypatch.setattr(portfolio_cli, "_today_kst", lambda: date(2026, 11, 10))
+    monkeypatch.setattr(portfolio_cli, "_now", lambda: now)
     portfolio_context = portfolio_cli.PortfolioContext(
         positions=[portfolio_cli.Position(ticker="SYNTH", quantity=2, currency="USD")]
     )
@@ -131,7 +144,11 @@ def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(mon
         full_workflow=True,
         portfolio_context=portfolio_context,
     )
-    research = workflow.analyzer(type("Input", (), {"symbol": "SYNTH"})())
+    assert workflow.get_market_research() is None
+    workflow.analyzer(SimpleNamespace(symbol="005930.KS", market_country="KR"))
+    assert workflow.get_market_research() is None
+    research = workflow.analyzer(SimpleNamespace(symbol="SYNTH", market_country="US"))
+    workflow.analyzer(SimpleNamespace(symbol="FUND", market_country="US"))
 
     assert "Synthetic sentiment research" in research
     assert calls[0] == (
@@ -139,17 +156,19 @@ def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(mon
         ("market", "social", "news", "fundamentals"),
         None,
     )
-    initial = next(row[1] for row in calls if row[0] == "initial")
-    assert initial["portfolio"] is portfolio_context
-    assert decisions == [
-        TradingDecisionResult(
-            "SYNTH",
-            "Synthetic trader plan",
-            "Synthetic risk debate",
-            "Synthetic final decision",
-            "Buy",
-        )
-    ]
+    initial_states = [row[1] for row in calls if row[0] == "initial"]
+    assert all(state["portfolio"] is portfolio_context for state in initial_states)
+    assert "market_research" not in initial_states[0]
+    assert all(state["market_research"] is snapshot for state in initial_states[1:])
+    assert workflow.get_market_research() is snapshot
+    assert [call for call in calls if call[0] == "collect"] == [("collect", "2026-11-10", now)]
+    assert decisions[1] == TradingDecisionResult(
+        "SYNTH",
+        "Synthetic trader plan",
+        "Synthetic risk debate",
+        "Synthetic final decision",
+        "Buy",
+    )
 
 
 def test_run_scenarios_attaches_full_decisions_and_passes_whole_book(monkeypatch):
@@ -204,6 +223,16 @@ def test_full_workflow_decisions_render_and_sensitive_text_is_redacted():
     now = datetime.now(UTC)
     holdings = Holdings((_holding(now),), now)
     analytics = analyze_portfolio(holdings, (), None, as_of=now)
+    market_research = {
+        "window": {"cutoff": "2026-11-09T21:00:00+00:00"},
+        "evidence": [],
+        "investigations": [{
+            "key": "rates",
+            "label": "Synthetic rates",
+            "status": "unavailable",
+            "reason": "Synthetic provider failure",
+        }],
+    }
     scenarios = PortfolioScenarioReport(
         status="complete",
         portfolio_analysis_status="partial",
@@ -213,6 +242,7 @@ def test_full_workflow_decisions_render_and_sensitive_text_is_redacted():
         symbols_researched=1,
         unmapped_holdings=0,
         omitted_symbols=0,
+        market_research=market_research,
         trading_decisions=(
             TradingDecisionResult(
                 "SYNTH",
@@ -246,6 +276,8 @@ def test_full_workflow_decisions_render_and_sensitive_text_is_redacted():
     assert "Synthetic risk debate" in markdown
     assert "hold the position" in markdown
     assert "synthetic-secret" not in markdown
+    assert "미국 시황 근거" in markdown and "Synthetic provider failure" in markdown
+    assert report.model_dump(mode="json")["scenarios"]["market_research"] == market_research
     assert "주문을 생성하거나 실행하지 않습니다" in markdown
 
 

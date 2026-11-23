@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from tradingagents.api_diagnostics import APIFailure, format_api_failure
 from tradingagents.portfolio.analytics import PortfolioAnalytics
@@ -280,6 +280,14 @@ class ScenarioReport(_ReportModel):
     omitted_symbols: int
     trading_decisions: list[TradingDecisionReport] = Field(default_factory=list)
     synthesis_failure: ScenarioSynthesisFailureReport | None = None
+    market_research: dict | None = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        if self.market_research is None:
+            data.pop("market_research", None)
+        return data
 
 
 class PortfolioReport(_ReportModel):
@@ -455,6 +463,7 @@ def build_portfolio_report(
             symbols_researched=scenarios.symbols_researched,
             unmapped_holdings=scenarios.unmapped_holdings,
             omitted_symbols=scenarios.omitted_symbols,
+            market_research=scenarios.market_research,
             synthesis_failure=(
                 ScenarioSynthesisFailureReport.model_validate(
                     scenarios.synthesis_failure.__dict__
@@ -791,6 +800,10 @@ def render_markdown(report: PortfolioReport) -> str:
             )
         if report.scenarios.summary:
             lines.extend(["", report.scenarios.summary])
+        if report.scenarios.market_research:
+            from tradingagents.market_report import render_market_research
+
+            lines.extend(["", "### 미국 시황 근거", "", render_market_research(report.scenarios.market_research)])
         for horizon in report.scenarios.horizons:
             lines.extend(["", f"### {horizon.name} ({horizon.window})", ""])
             for label, scenario in (

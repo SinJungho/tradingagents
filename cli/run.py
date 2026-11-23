@@ -92,6 +92,7 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
         if selections.get(key) is not None:
             config[key] = selections[key]
     config["output_language"] = selections.get("output_language", "English")
+    config["market_research_enabled"] = True
     # --checkpoint/--no-checkpoint overrides only when explicitly given; omitting
     # the flag preserves TRADINGAGENTS_CHECKPOINT_ENABLED / the default (#976).
     if checkpoint is not None:
@@ -232,12 +233,6 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
         )
         update_display(layout, spinner_text, stats_handler=stats_handler, start_time=start_time)
 
-        # The same initial state propagate() builds, with the resolved
-        # instrument identity; the graph's Memory Log step settles past
-        # decisions and loads their lessons alongside the analysts.
-        init_agent_state = graph.create_run_state(
-            selections["ticker"], selections["analysis_date"], selections["asset_type"], portfolio
-        )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)
         args = graph.propagator.get_graph_args(callbacks=[stats_handler])
@@ -257,7 +252,14 @@ def run_analysis(checkpoint: bool | None = None, portfolio=None, flags=None):
         # try/finally tears the checkpointer down even if the stream raises.
         trace = []
         try:
-            for messages, chunk in graph.stream_run(graph.checkpoint_input(init_agent_state), **args):
+            # A resumed run already has the instrument and public snapshot at
+            # its original cutoff. Rebuild neither when continuing that run.
+            graph_input = None
+            if not getattr(graph, "_resuming", False):
+                graph_input = graph.create_run_state(
+                    selections["ticker"], selections["analysis_date"], selections["asset_type"], portfolio
+                )
+            for messages, chunk in graph.stream_run(graph_input, **args):
                 for message in messages:
                     msg_id = getattr(message, "id", None)
                     if msg_id is not None:

@@ -47,6 +47,7 @@ class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
+    market_research: Annotated[dict, "Public US market evidence collected at the original run cutoff"]
     trade_date: Annotated[str, "The analysis date; data is served as of it"]
 
     # research step

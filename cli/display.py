@@ -440,6 +440,12 @@ def display_complete_report(final_state):
         console.print(Panel("[bold]VI. Data Source Failures[/bold]", border_style="yellow"))
         console.print(Panel(Markdown(final_state["source_failures"]), title="Data Retrieval", border_style="blue", padding=(1, 2)))
 
+    if research := final_state.get("market_research"):
+        from tradingagents.market_report import render_market_research
+
+        console.print(Panel("[bold]VII. US Market Research[/bold]", border_style="cyan"))
+        console.print(Markdown(render_market_research(research)))
+
 
 def update_research_team_status(status):
     """Update status for research team members (not Trader)."""

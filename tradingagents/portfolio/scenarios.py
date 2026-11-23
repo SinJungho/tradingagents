@@ -6,7 +6,7 @@ import json
 import re
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal, TypedDict
@@ -163,6 +163,7 @@ class PortfolioScenarioReport:
     omitted_symbols: int
     trading_decisions: tuple[TradingDecisionResult, ...] = ()
     synthesis_failure: ScenarioSynthesisFailure | None = None
+    market_research: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -870,6 +871,7 @@ def _synthesis_messages(
     portfolio_facts: dict[str, object],
     unmapped_holdings: int,
     omitted_symbols: int,
+    market_research: dict | None = None,
 ) -> list[SystemMessage | HumanMessage]:
     horizon_data = [{"name": h.name, "window": _window(h)} for h in config.horizons]
     symbol_data = [
@@ -900,6 +902,15 @@ def _synthesis_messages(
             "omitted_symbols": omitted_symbols,
         },
     }
+    if market_research is not None:
+        from tradingagents.market_report import market_research_context
+
+        payload["us_market_research"] = json.loads(market_research_context(market_research))
+    market_instruction = (
+        "For US market claims, cite evidence IDs and link relevant rates, sectors and earnings "
+        "to the affected instruments. State the limits and what observations could change the conclusion. "
+        if market_research is not None else ""
+    )
     return [
         SystemMessage(
             content=(
@@ -913,6 +924,7 @@ def _synthesis_messages(
                 "records only and are not a complete ledger or realized-P&L report. "
                 "Never invent a data publisher or publication/as-of timestamp; retain source "
                 "and time details only when they appear in the supplied research. "
+                f"{market_instruction}"
                 "Provide an upside, base, and downside case for each configured horizon. "
                 "Do not provide probabilities, forecast returns, or target prices. "
                 "Frame any entry, additional-buying, or weight-adjustment discussion as "
@@ -945,10 +957,13 @@ class PortfolioScenarioWorkflow:
         symbol_analyzer: SymbolAnalyzer,
         scenario_llm: object,
         config: ScenarioConfig | None = None,
+        *,
+        get_market_research: Callable[[], dict | None] | None = None,
     ) -> None:
         self.symbol_analyzer = symbol_analyzer
         self.scenario_llm = scenario_llm
         self.config = config or ScenarioConfig()
+        self.get_market_research = get_market_research
 
         workflow = StateGraph(_ScenarioState)
         workflow.add_node("research_symbols", self._research_symbols)
@@ -988,7 +1003,10 @@ class PortfolioScenarioWorkflow:
                     "portfolio_analysis_status": portfolio_status,
                 }
             )
-        return result["report"]
+        report = result["report"]
+        if self.get_market_research is not None:
+            report = replace(report, market_research=self.get_market_research())
+        return report
 
     def _research_symbols(self, state: _ScenarioState) -> dict[str, object]:
         results = []
@@ -1065,6 +1083,7 @@ class PortfolioScenarioWorkflow:
             portfolio_facts=portfolio_facts,
             unmapped_holdings=unmapped,
             omitted_symbols=omitted,
+            market_research=self.get_market_research() if self.get_market_research else None,
         )
         # Deliberately invoke the model directly: this workflow provides no tools.
         response = self.scenario_llm.invoke(messages)

@@ -3,12 +3,16 @@ import json
 import logging
 import os
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import tradingagents
-from tradingagents.agents.context import build_instrument_context, resolve_instrument_identity
+from tradingagents.agents.context import (
+    build_instrument_context,
+    is_us_equity_or_etf,
+    resolve_instrument_identity,
+)
 from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows.config import run_config, run_config_context, set_config
 from tradingagents.dataflows.date_window import get_current_date, is_historical
@@ -45,7 +49,29 @@ def _validate_trade_date(trade_date) -> str:
 # whether it checkpoints, and how often it retries a provider.
 _NOT_IN_SIGNATURE = frozenset({
     "results_dir", "data_cache_dir", "memory_log_path", "checkpoint_enabled", "llm_max_retries",
+    # Existing CLI threads can resume with their original evidence, if any.
+    "market_research_enabled",
 })
+
+
+def load_market_research(trade_date: str, now: datetime) -> dict:
+    """Keep an unexpected acquisition failure from aborting the equity run."""
+    from tradingagents.market_report import collect_market_research
+
+    try:
+        return collect_market_research(trade_date, now=now)
+    except Exception as exc:
+        return {
+            "window": {"analysis_date": trade_date, "cutoff": None, "generated_at": now.isoformat()},
+            "evidence": [],
+            "investigations": [{
+                "key": "market_research",
+                "label": "미국 시황 근거",
+                "status": "unavailable",
+                "reason": f"공통 자료 수집 실패 ({type(exc).__name__})",
+                "evidence_ids": [],
+            }],
+        }
 
 
 class TradingAgentsGraph:
@@ -298,11 +324,20 @@ class TradingAgentsGraph:
         and loads them alongside the analysts (see ``_memory_step``).
         """
         trade_date = _validate_trade_date(trade_date)
-        return self.propagator.create_initial_state(
+        market_research = None
+        if asset_type == "stock" and self.config.get("market_research_enabled"):
+            now = datetime.now(UTC)
+            identity = resolve_instrument_identity(company_name)
+            instrument_context = build_instrument_context(company_name, asset_type, identity, trade_date)
+            if is_us_equity_or_etf(company_name, identity):
+                market_research = load_market_research(trade_date, now)
+        else:
+            instrument_context = self.resolve_instrument_context(company_name, asset_type, trade_date)
+        state = self.propagator.create_initial_state(
             company_name,
             trade_date,
             asset_type=asset_type,
-            instrument_context=self.resolve_instrument_context(company_name, asset_type, trade_date),
+            instrument_context=instrument_context,
             portfolio_context=portfolio.render(company_name) if portfolio is not None else "",
             portfolio_context_provided=portfolio is not None,
             portfolio_positions=(
@@ -310,6 +345,9 @@ class TradingAgentsGraph:
                 if portfolio is not None else []
             ),
         )
+        if market_research is not None:
+            state["market_research"] = market_research
+        return state
 
     def _memory_step(self, state):
         """The graph's Memory Log step, alongside the analysts (#1428): settle every
@@ -378,7 +416,9 @@ class TradingAgentsGraph:
     def _run_graph(self, company_name, trade_date, asset_type: str = "stock",
                    checkpoint_thread_id: str | None = None, portfolio=None):
         """Execute the graph and write the resulting state to disk and memory log."""
-        init_agent_state = self.create_run_state(company_name, trade_date, asset_type, portfolio)
+        init_agent_state = (
+            None if self._resuming else self.create_run_state(company_name, trade_date, asset_type, portfolio)
+        )
         args = self.propagator.get_graph_args()
 
         # Inject the checkpoint thread_id (from checkpoint_scope) so the same
@@ -469,6 +509,8 @@ class TradingAgentsGraph:
             "final_rating": run_rating(final_state),
             "run_settings": self.run_settings(),
         }
+        if "market_research" in final_state:
+            entry["market_research"] = final_state["market_research"]
 
         # A ticker that would escape the results directory is rejected.
         safe_ticker = safe_ticker_component(final_state["company_of_interest"])

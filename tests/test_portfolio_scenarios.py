@@ -159,6 +159,7 @@ def test_default_and_configured_horizons_have_all_three_cases():
 
     assert report.portfolio_analysis_status == "unknown"
     absent_analysis = json.loads(llm.messages[1].content)["portfolio_analysis"]
+    assert "us_market_research" not in json.loads(llm.messages[1].content)
     assert absent_analysis["status"] == "unknown"
     assert absent_analysis["currencies_status"] == "unknown"
     assert absent_analysis["order_history"]["status"] == "unknown"
@@ -171,6 +172,24 @@ def test_default_and_configured_horizons_have_all_three_cases():
         assert horizon.upside.investment_rationale
         assert horizon.base.investment_rationale
         assert horizon.downside.investment_rationale
+
+
+def test_deep_synthesis_receives_and_returns_one_market_evidence_snapshot():
+    snapshot = {
+        "window": {"cutoff": "2026-11-09T21:00:00+00:00"},
+        "evidence": [{"id": "E0001", "label": "Synthetic yield", "value": 4.23, "status": "available"}],
+        "investigations": [],
+    }
+    llm = MockScenarioLLM(_response(evidence="E0001"))
+    workflow = PortfolioScenarioWorkflow(
+        lambda item: f"Research for {item.symbol}", llm, get_market_research=lambda: snapshot,
+    )
+
+    report = workflow.invoke(Holdings((_holding("SYNTH"), _holding("OTHER")), NOW))
+
+    assert json.loads(llm.messages[1].content)["us_market_research"] == snapshot
+    assert "cite evidence IDs" in llm.messages[0].content
+    assert report.market_research == snapshot
 
 
 def test_symbol_collection_is_mapped_deduplicated_and_redacted_before_synthesis():
