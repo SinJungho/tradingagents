@@ -405,6 +405,32 @@ def chart_check(
                    f"saved={root / 'chart_validation.json'}")
 
 
+@app.command("chart-drawings-check")
+def chart_drawings_check(
+    drawings: str = typer.Option(..., "--drawings", help="Path to the drawings.json evidence manifest"),
+    json_output: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+) -> None:
+    """Verify recorded Tratto drawing completion evidence."""
+    from pathlib import Path
+
+    from tradingagents.dataflows.chart_drawings_check import verify_drawings
+
+    result, code = verify_drawings(Path(drawings).expanduser())
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(result["status"])
+        for issue in result["issues"]:
+            typer.echo(f"  {issue}")
+        for item in result["items"]:
+            label = item["id"] or f"#{item['index'] + 1}"
+            typer.echo(f"  {label}: {item['status']}")
+            for issue in item["issues"]:
+                typer.echo(f"    {issue}")
+    if code:
+        raise typer.Exit(code=code)
+
+
 @zone_sample_app.command("refresh")
 def zone_sample_refresh(
     account_ordinal: int | None = typer.Option(None, "--account-ordinal", min=1,

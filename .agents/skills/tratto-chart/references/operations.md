@@ -105,3 +105,39 @@ Tratto 확장은 `ws://127.0.0.1:8787`에 한 서버만 연결한다. 차트 변
 4. **결과 보존.** `drawings.json`에 대상과 기간, 항목별 근거와 출처, 예상·실제 좌표, 처리 유형과 이유, 분석 사용 여부, 화면 표시 여부, 중복 개수, 재로딩 후 상태, 확인 시각·시간대를 남긴다. 변경 전후 MCP 조회 원문과 최종 캡처의 경로도 기록한다. 기존 실행 폴더가 있으면 그곳에 저장하고, 단독 차트 편집이면 작업용 로컬 경로를 사용한다. 브라우저에서 확인한 변경과 남은 제약을 사용자에게 알리고 캡처와 좌표 검증 기록의 경로를 제공한다.
 
 차트 데이터 일치(`chart_validation.status` 또는 5년 OHLCV 검증), 드로잉 확인(좌표·재열기 후 표시), 통계적 예측력을 각각 보고한다. `chart-zones`의 통계는 해당 평가의 `effective_status`로 확인한다. 평가가 없거나 통계가 `passed`가 아니거나 `pending`/`stale`이면 예측력 미확인으로 보고한다. 통과 상태는 평가한 계산 방식의 과거 비교 결과를 나타낸다.
+
+### 추가·재사용 증거 검사
+
+구간이나 추세선을 추가·재사용할 때 아래 형식으로 종목·대상 탭별 `drawings.json`을 남긴다. 세 번의 `read_drawings` 응답을 각각 저장하고, 같은 탭의 종목·주기와 확인 시각을 기록한다. 재열기 후 실제 탭에서 항목이 읽을 수 있게 표시되는지 확인하고 캡처한다. 여러 항목이 한 화면에 들어오면 캡처를 공유할 수 있다.
+
+```json
+{
+  "version": 1,
+  "target": {"tab_id": "chart-tab-7", "ticker": "QQQ", "interval": "day", "as_of": "2026-11-20"},
+  "data_validation": {"source": "chart-zones", "path": "zones/chart_validation.json"},
+  "reads": {
+    "before": {"tab_id": "chart-tab-7", "interval": "day", "path": "read-before.json", "observed_at": "2026-11-20T20:01:00-05:00"},
+    "after": {"tab_id": "chart-tab-7", "interval": "day", "path": "read-after.json", "observed_at": "2026-11-20T20:02:00-05:00"},
+    "reopened": {"tab_id": "chart-tab-7", "interval": "day", "path": "read-reopened.json", "observed_at": "2026-11-20T20:03:00-05:00"}
+  },
+  "items": [{
+    "id": "recent-trend",
+    "action": "add",
+    "type": "segment",
+    "requested_at": "2026-11-20T20:00:00-05:00",
+    "anchors": [{"date": "2026-11-17", "price": "101.23"}, {"date": "2026-11-20", "price": "102.45"}],
+    "reopened_screen": {"tab_id": "chart-tab-7", "visible": true, "capture_path": "reopened.png"}
+  }]
+}
+```
+
+- 경로는 모두 `drawings.json` 기준 상대 경로다. 개별 조회 파일에 Tratto `read_drawings` JSON-RPC 응답 또는 그 안의 `ok`·`data` 응답을 보존한다. 조회 시각은 시간대 오프셋을 포함하고 실제 수행 순서대로 기록한다. 요청 좌표와 `requested_at`은 변경 전 조회까지 기록한다.
+- `chart-zones`는 같은 종목·기준일의 `chart-check`가 쓴 `chart_validation.json`을 쓴다. 5년 일봉 경로는 `source`를 `five-year-ohlcv`로 쓰고, 근거 JSON에 `ticker`, `as_of`, `sessions`, `ohlcv`를 남긴다. 각각 검증을 통과했을 때 `sessions`와 `ohlcv`를 `passed`로 기록하고 거래일·봉 수·누락·중복·OHLCV 검사 내역도 보존한다.
+- 항목 ID는 파일 안에서 고유해야 한다. `add`는 변경 전 일치 객체 0개, `reuse`는 1개를 기대한다. 둘 다 변경 직후와 재열기 후 각각 1개여야 한다. Tratto 종류 `rectangle`·`segment`는 두 앵커, `horizontal`은 한 앵커를 기록한다. 저장된 ChartIQ `d0/v0`, `d1/v1`에 맞춰 거래일과 십진수 가격을 대조한다. 그림 ID가 달라도 좌표가 같으면 일치로 센다.
+- 화면 확인은 작업자가 실제 탭을 다시 연 뒤 기록한다. CLI는 탭·표시 기록과 비어 있지 않은 캡처 파일을 확인한다.
+
+```bash
+tradingagents chart-drawings-check --drawings path/to/drawings.json --json
+```
+
+종료 코드 `0`은 완료, `1`은 증거 부족·불일치(이전 형식 포함), `2`는 입력 파일 읽기·해석 실패다. 출력의 공통 및 항목별 사유를 보고한다. 교체·삭제는 위의 실제 탭·좌표 확인 절차를 적용하고, 백테스트는 별도 상태를 기록한다.
