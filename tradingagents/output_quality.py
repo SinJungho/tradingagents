@@ -218,6 +218,25 @@ def _review_holdings(parts, final_state: Mapping, ticker: str) -> list[QualityWa
 
 def review_output(final_state: Mapping, ticker: str, parts) -> tuple[QualityWarning, ...]:
     """Return stable numeric and direct-holdings warnings without changing text."""
-    warnings = _review_numeric_claims(parts, final_state.get("tool_evidence_numbers") or ())
+    numbers = list(final_state.get("tool_evidence_numbers") or ())
+    research = final_state.get("market_research") or {}
+    for row in research.get("evidence", ()):
+        if row["status"] in {"available", "partial", "stale"}:
+            for field in ("value", "change_bp", "change_pct", "change_points", "return_1d", "return_5d", "return_20d"):
+                numbers.extend(_evidence_numbers(row.get(field)))
+    warnings = _review_numeric_claims(parts, numbers)
     warnings.extend(_review_holdings(parts, final_state, ticker))
     return tuple(warnings)
+
+
+def _evidence_numbers(value):
+    """Extract numeric fields without treating labels, dates, or IDs as values."""
+    if isinstance(value, Mapping):
+        value = value.values()
+    elif type(value) in (int, float):
+        yield str(value)
+        return
+    elif not isinstance(value, (list, tuple)):
+        return
+    for item in value:
+        yield from _evidence_numbers(item)

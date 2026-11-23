@@ -56,6 +56,25 @@ def test_supported_percent_calculation_uses_provided_inputs():
 
 
 @pytest.mark.unit
+def test_market_evidence_numbers_are_recognized_when_values_are_available():
+    state = {
+        "market_research": {
+            "evidence": [
+                {"status": "available", "value": {"yield": 4.23}},
+                {"status": "unavailable", "value": 7.89},
+            ],
+        },
+    }
+
+    warnings = review_output(
+        state, "AAPL", _parts(manager="Yield: 4.23%.\nYield: 7.89%.")
+    )
+
+    assert len(warnings) == 1
+    assert warnings[0].location == "Portfolio Manager · line 2"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("claim", [
     "Return is (110 - 100) / 100 = 9%.",
     "Return is 9% from 100 to 110.",

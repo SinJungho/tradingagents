@@ -1,0 +1,18 @@
+{
+  "captured_at_utc": "2026-11-19 00:28:35 UTC",
+  "source_tool": "mcp__tratto__get_chart_data",
+  "args": {
+    "last_n": 5
+  },
+  "note": "Verbatim CallToolResult from the live QQQ Yahoo Finance chart; bars_csv and timestamps are retained without normalization.",
+  "raw_call_tool_result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"id\":\"3f90c4ed-3da6-4e1f-8337-3ee768e0bd40\",\"ok\":true,\"symbol\":\"QQQ\",\"data\":{\"symbol\":\"QQQ\",\"interval\":\"day\",\"total_bars_loaded\":775,\"loaded_range\":{\"start\":\"2023-10-17T15:00:00.000Z\",\"end\":\"2026-11-17T15:00:00.000Z\"},\"last_close\":659.510009765625,\"window_range\":{\"start\":\"2026-11-11T15:00:00.000Z\",\"end\":\"2026-11-17T15:00:00.000Z\"},\"window_high\":{\"price\":694.5599975585938,\"date\":\"2026-11-11T15:00:00.000Z\"},\"window_low\":{\"price\":646.6400146484375,\"date\":\"2026-11-16T15:00:00.000Z\"},\"change_pct\":-3.06,\"returned_bars\":5,\"downsampled\":true,\"bucketed\":false,\"bars_csv\":\"date,o,h,l,c,v\\n2026-11-11T15:00:00.000Z,680.32,694.56,679.83,688.17,37219500\\n2026-11-12T15:00:00.000Z,688.54,688.75,671.68,679.89,42098600\\n2026-11-15T15:00:00.000Z,671.04,672.15,660.48,661.75,43577000\\n2026-11-16T15:00:00.000Z,663.05,663.36,646.64,656.95,55693800\\n2026-11-17T15:00:00.000Z,661.068,662.7987,653.8,659.51,15719351\"}}"
+      }
+    ],
+    "isError": false
+  }
+}
+

@@ -144,7 +144,7 @@ def test_a_full_run_reaches_a_logged_decision(tmp_path, monkeypatch, offline, st
     tool_methods = {"get_stock_data", "get_indicators", "get_news", "get_global_news",
                     "get_macro_indicators", "get_prediction_markets", "get_fundamentals",
                     "get_balance_sheet", "get_cashflow", "get_income_statement",
-                    "get_insider_transactions", "ohlcv"}
+                    "get_insider_transactions", "get_chart_history", "ohlcv"}
     assert offline == tool_methods
     assert state["tool_evidence_numbers"]
     assert [e["rating"] for e in graph.memory_log.load_entries()] == ["Overweight"]
@@ -308,13 +308,14 @@ class LoopingModel(ScriptedModel):
 
     tool_turns: list = Field(default_factory=list)    # shared across bound copies
     last_turns: list = Field(default_factory=list)    # histories of the turns offered no tools
+    target_tool: str | None = None
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         if not self.tools:
             self.last_turns.append(messages)
             return super()._generate(messages, stop, run_manager, **kwargs)
         self.tool_turns.append(1)
-        tool = self.tools[0]
+        tool = next((candidate for candidate in self.tools if candidate.name == self.target_tool), self.tools[0])
         call = {"name": tool.name, "id": f"call_{len(self.tool_turns)}",
                 "args": {k: v for k, v in ARGS.items()
                          if k in tool.tool_call_schema.model_json_schema()["properties"]}}
@@ -333,6 +334,23 @@ def test_an_analyst_that_keeps_calling_tools_writes_its_report_at_the_limit(tmp_
     for key in ("market_report", "news_report", "fundamentals_report"):
         assert final_state[key] == TEXT
     assert rating == "Overweight"
+
+
+@pytest.mark.unit
+def test_market_analyst_chart_zone_calls_are_bounded_by_tool_round_limit(
+    tmp_path, monkeypatch, offline,
+):
+    from tradingagents.agents import tools
+
+    calls = []
+    monkeypatch.setattr(tools, "calculate_chart_zones",
+                        lambda symbol, as_of: calls.append((symbol, as_of)) or {"status": "ok"})
+    model = LoopingModel(structured=True, target_tool="get_chart_zones")
+    graph = _graph(tmp_path, monkeypatch, model, selected_analysts=("market",), max_tool_rounds=2)
+
+    graph.propagate("NVDA", TRADE_DATE)
+
+    assert calls == [("NVDA", TRADE_DATE), ("NVDA", TRADE_DATE)]
 
 
 @pytest.mark.unit

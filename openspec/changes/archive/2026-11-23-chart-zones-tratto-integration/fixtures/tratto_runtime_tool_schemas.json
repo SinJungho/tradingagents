@@ -1,0 +1,45 @@
+{
+  "captured_at_utc": "2026-11-19 00:28:35 UTC",
+  "source": "Connected mcp__tratto runtime tool registry surfaced to this session",
+  "registry_tool_count": 50,
+  "raw_json_rpc_tools_list_available": false,
+  "note": "The runtime exposes the connected MCP tool names and typed input declarations, but no tools/list RPC operation or raw JSON Schema payload export. Declarations below are preserved verbatim from the active registry and should not be described as the raw JSON-RPC envelope.",
+  "tools": [
+    {
+      "name": "mcp__tratto__draw_rectangle",
+      "description": "Draw a rectangle between two opposite (date, price) corners on the active Yahoo Finance chart — e.g. to box a consolidation range or a supply/demand zone. Dates snap to the nearest loaded bar. fill_color is optional.",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__draw_rectangle(args: {\n  // Line color as a CSS hex/name string, e.g. \"#FF3B30\". Optional.\n  color?: string;\n  // Date for point 1 (ISO-ish, e.g. from get_chart_data). Snapped to nearest bar.\n  date1: string;\n  // Date for point 2 (ISO-ish). Snapped to nearest bar.\n  date2: string;\n  // Fill color for the shape. Optional; the engine derives one if omitted.\n  fill_color?: string;\n  // Fill opacity from 0 (transparent) to 1 (opaque), baked into fill_color as an rgba alpha (ChartIQ has no separate opacity field). Only meaningful together with fill_color. Guide budget: 0.10 zones/rectangles, 0.08 channels & large shapes, 0.15 max.\n  fill_opacity?: number;\n  // Line width in pixels. Optional; defaults to 1.\n  line_width?: number;\n  // Line pattern: \"solid\" | \"dashed\" | \"dotted\". Optional; defaults to solid.\n  pattern?: string;\n  // Price (y-axis value) for point 1.\n  price1: number;\n  // Price (y-axis value) for point 2.\n  price2: number;\n}): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__get_chart_data",
+      "description": "Read the OHLCV bars currently loaded in the active Yahoo Finance chart (ChartIQ engine). Read-only. Returns a compact summary head (symbol, interval, total bars, loaded range, last close, window high/low with dates, % change) plus a CSV block ('date,o,h,l,c,v', one row per bar). Defaults to the most recent 50 bars to stay token-cheap; use get_chart_summary if you only need the header. Use last_n / from / to to pick a window, and max_points to downsample via bucket aggregation (extremes preserved).",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__get_chart_data(args: {\n  // Inclusive lower bound on bar date (ISO-ish, e.g. as emitted in the CSV).\n  from?: string;\n  // Return only the most recent N bars. Defaults to 50 when no window is given.\n  last_n?: number;\n  // Downsample the selected bars to at most this many points via bucket aggregation (first-open/max-high/min-low/last-close/sum-volume per bucket). Never stride-samples, so support/resistance extremes survive.\n  max_points?: number;\n  // Inclusive upper bound on bar date (ISO-ish).\n  to?: string;\n}): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__get_chart_summary",
+      "description": "Read just the compact summary head for the active Yahoo Finance chart (symbol, interval, total bars, loaded range, last close, recent-window high/low with dates, % change) with ZERO bar data. Read-only. Use this when you only need to confirm which symbol/period is on screen without spending tokens on bars.",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__get_chart_summary(args: { [key: string]: unknown; }): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__open_chart",
+      "description": "Navigate the user's browser to Yahoo Finance's Advanced Chart for a symbol and wait until the chart is truly ready to read/draw on. Reuses an existing Yahoo tab when there is one (otherwise opens a new tab), and fixes the 'must manually refresh once before the extension connects' problem. Call this first when the user names a stock — then get_chart_data / drawing tools work immediately without any manual step. Before drawing anything beyond a single trivial line, call get_drawing_guide once and follow its design system so overlays stay clean. Returns whether a tab was reused and how many bars loaded.",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__open_chart(args: {\n  // Ticker symbol to open, e.g. \"NVDA\" or \"AAPL\". Case-insensitive.\n  symbol: string;\n  // How long to wait for the chart to become ready, in ms. Defaults to 15000.\n  timeout_ms?: number;\n}): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__read_drawings",
+      "description": "List the drawings currently on the active Yahoo Finance chart (both ones you drew and ones the user drew by hand). Read-only. Use this before drawing to see what's already there.",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__read_drawings(args: { [key: string]: unknown; }): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__set_periodicity",
+      "description": "Change the active Yahoo Finance chart's bar periodicity (e.g. daily/weekly/intraday). This triggers an ASYNC quotefeed reload of the chart's data — the tool waits for it to finish (or times out) before returning, and reports total_bars + dataset_rebuilt so you can confirm the reload really happened. Weekly bars: pass interval:\"week\" with no timeUnit (the unit lives in the interval itself, and the engine reports timeUnit:null back). Daily: interval:1, timeUnit:\"day\". Intraday: interval:<minutes>, timeUnit:\"minute\".",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__set_periodicity(args: {\n  // Bar interval: a number of minutes for intraday, or a string like \"week\"/\"day\". Required.\n  interval: string | number;\n  // Period multiplier. Optional; defaults to 1.\n  period?: number;\n  // Unit for a numeric interval, e.g. \"minute\" | \"day\". Omit for weekly (interval:\"week\" already carries the unit).\n  timeUnit?: string;\n  // Ready-wait budget for the async data reload, in ms. Optional; defaults to 10000.\n  timeout_ms?: number;\n}): Promise<CallToolResult>; };\n```"
+    },
+    {
+      "name": "mcp__tratto__set_range",
+      "description": "Change how much history the active Yahoo Finance chart shows/loads — either a relative span (\"1y\", \"6m\", \"3m\", \"5d\", \"1d\", \"ytd\", \"all\") or an explicit start/end date pair. This triggers an ASYNC quotefeed reload — the tool waits for it to finish (or times out) before returning, and reports total_bars + dataset_rebuilt + the resulting loaded range so you can confirm the reload really happened. Pass either span, or both start and end — not a mix.",
+      "runtime_declaration": "```ts\ndeclare const tools: { mcp__tratto__set_range(args: {\n  // Explicit range end (ISO-ish). Use together with start.\n  end?: string;\n  // Relative span shorthand: \"1y\", \"6m\", \"3m\", \"5d\", \"1d\", \"ytd\", or \"all\".\n  span?: string;\n  // Explicit range start (ISO-ish). Use together with end.\n  start?: string;\n  // Ready-wait budget for the async data reload, in ms. Optional; defaults to 10000.\n  timeout_ms?: number;\n}): Promise<CallToolResult>; };\n```"
+    }
+  ]
+}
+

@@ -30,6 +30,10 @@ from tradingagents.dataflows.vendors.sec_edgar import (
     get_cashflow as get_sec_edgar_cashflow,
     get_income_statement as get_sec_edgar_income_statement,
 )
+from tradingagents.dataflows.vendors.yahoo.chart_history import (
+    get_chart_history,
+    get_earnings_dates,
+)
 from tradingagents.dataflows.vendors.yahoo.fundamentals import (
     get_balance_sheet as get_yfinance_balance_sheet,
     get_cashflow as get_yfinance_cashflow,
@@ -87,6 +91,10 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_prediction_markets",
         ]
+    },
+    "daily_chart_data": {
+        "description": "Raw Yahoo daily OHLCV for deterministic chart analysis",
+        "tools": ["get_chart_history", "get_earnings_dates"],
     }
 }
 
@@ -99,6 +107,8 @@ OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
+    "get_chart_history": {"yfinance": get_chart_history},
+    "get_earnings_dates": {"yfinance": get_earnings_dates},
     # core_stock_apis
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,

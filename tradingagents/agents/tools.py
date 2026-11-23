@@ -4,12 +4,14 @@ Each dated tool takes the run's ``trade_date`` from graph state (``InjectedState
 and never serves data past it, whatever date the model asks for.
 """
 
+import json
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
 
 from langchain_core.tools import tool
 from langgraph.prebuilt import InjectedState
 
+from tradingagents.dataflows.chart_zones import get_chart_zones as calculate_chart_zones
 from tradingagents.dataflows.date_window import as_of, as_of_window, get_current_date
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
@@ -123,6 +125,26 @@ def get_verified_market_snapshot(
         return vendor_unavailable("get_verified_market_snapshot", exc)
     except NoMarketDataError as exc:
         return no_data_available(exc)
+
+
+@tool
+def get_chart_zones(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str | None, "Analysis date, YYYY-MM-DD; defaults to run date"] = None,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """Return deterministic Yahoo daily zones and dated pivot evidence."""
+    try:
+        result = calculate_chart_zones(symbol, _run_date(curr_date, trade_date))
+        for avwap in result.get("anchored_vwap", {}).values():
+            avwap.pop("values", None)  # daily series is for chart drawing, not LLM context
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
+    except VendorUnavailableError as exc:
+        return vendor_unavailable("get_chart_zones", exc)
+    except NoMarketDataError as exc:
+        return no_data_available(exc)
+    except (ValueError, KeyError) as exc:
+        return f"CHART_ZONES_UNAVAILABLE: {exc}"
 
 
 @tool

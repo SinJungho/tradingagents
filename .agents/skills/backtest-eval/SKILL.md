@@ -1,6 +1,6 @@
 ---
 name: backtest-eval
-description: TradingAgents 결정이나 스타일 점수의 과거 성과를 백테스트하고 결과를 한계와 함께 해석한다. "백테스트 돌려줘", "이 전략 예측력 있어?", "style-backtest", "과거 성과 검증", "신호가 맞았는지" 요청에 사용한다.
+description: TradingAgents 결정, 스타일 점수, 차트 가격 구간의 과거 성과를 백테스트하고 결과를 한계와 함께 해석한다. "백테스트 돌려줘", "이 전략 예측력 있어?", "style-backtest", "zone-backtest", "과거 성과 검증", "신호가 맞았는지" 요청에 사용한다.
 ---
 
 # 백테스트와 예측력 평가
@@ -11,9 +11,11 @@ description: TradingAgents 결정이나 스타일 점수의 과거 성과를 백
 | --- | --- | --- |
 | 그래프 전체 결정(등급) | `tradingagents backtest <T1,T2> --start <D> --end <D> --every 7 [--analysts market,news]` | 셀마다 전체 그래프 실행 |
 | 코드 계산 스타일 점수 | `tradingagents style-backtest <T1,T2> --start <D> --end <D> --every 30` | 없음 |
+| 차트 가격 구간 | `tradingagents zone-backtest run --period validate` | 없음 |
 
 - `backtest`는 비용이 크다. 실행 전에 셀 수(티커 × 날짜)와 대략의 LLM 호출 수를 알리고 사용자 허용을 받는다. 중단된 실행은 `--run-id`로 이어간다.
 - `style-backtest`는 네트워크 자료만 쓰므로 바로 실행해도 된다. 가격 이력이 약 5년이라 모멘텀은 1년, 가치·성장·품질은 앞뒤 1년씩 여유가 필요하다.
+- `zone-backtest`는 고정 표본과 기간을 쓴다. CLI가 해당 표본의 tune 실행을 요구하면 `zone-backtest run --period tune`을 먼저 실행한다. 구간별 평가 결과와 유효 상태를 기록하고 미결·표본 부족의 이유를 보고한다. CSV 가격 일치와 드로잉 확인은 `tratto-chart`의 검증 결과로 별도 보고한다.
 
 ## 2. 종목군
 

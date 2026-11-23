@@ -62,6 +62,7 @@ DATED_TOOLS = [
     tools.get_indicators,
     tools.get_macro_indicators,
     tools.get_verified_market_snapshot,
+    tools.get_chart_zones,
 ]
 
 
@@ -72,7 +73,7 @@ def test_trade_date_is_hidden_from_the_model(tool):
 
 
 INSTRUMENT_TOOLS = [
-    tools.get_stock_data, tools.get_indicators, tools.get_verified_market_snapshot,
+    tools.get_stock_data, tools.get_indicators, tools.get_verified_market_snapshot, tools.get_chart_zones,
     tools.get_fundamentals, tools.get_balance_sheet, tools.get_cashflow,
     tools.get_income_statement, tools.get_news, tools.get_insider_transactions,
 ]
@@ -91,6 +92,32 @@ def test_the_instrument_is_hidden_from_the_model(tool):
 def test_a_tool_serves_the_run_instrument_whatever_the_model_passes():
     args = _run(tools.get_indicators, {"symbol": "RSI", "indicator": "rsi", "curr_date": TRADE_DATE}, tools)
     assert args[1] == "NVDA"
+
+
+@pytest.mark.unit
+def test_chart_zones_tool_uses_the_run_date_and_instrument(monkeypatch):
+    from langchain_core.messages import AIMessage
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.prebuilt import ToolNode
+
+    captured = []
+    monkeypatch.setattr(tools, "calculate_chart_zones",
+                        lambda symbol, as_of: captured.append((symbol, as_of)) or {"close": 100.25})
+    graph = StateGraph(_State)
+    graph.add_node("tools", ToolNode([tools.get_chart_zones]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    result = graph.compile().invoke({
+        "messages": [AIMessage("", tool_calls=[{
+            "name": tools.get_chart_zones.name,
+            "args": {"curr_date": "2026-09-14"}, "id": "zone-1",
+        }])],
+        "trade_date": TRADE_DATE,
+        "company_of_interest": "NVDA",
+    })
+
+    assert captured == [("NVDA", TRADE_DATE)]
+    assert '"close": 100.25' in result["messages"][-1].content
 
 
 class _State(MessagesState):
