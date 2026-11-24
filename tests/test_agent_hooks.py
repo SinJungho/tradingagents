@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -15,9 +16,12 @@ import pytest
 GUARD = Path(__file__).resolve().parents[1] / ".claude" / "hooks" / "guard.py"
 
 
-def _run(mode: str, payload: dict, *extra: str) -> str | None:
+def _run(mode: str, payload: dict, *extra: str, env: dict | None = None) -> str | None:
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
     out = subprocess.run([sys.executable, str(GUARD), mode, *extra], input=json.dumps(payload),
-                         capture_output=True, text=True, check=True).stdout.strip()
+                         capture_output=True, text=True, check=True, env=process_env).stdout.strip()
     if not out:
         return None
     data = json.loads(out)
@@ -100,6 +104,103 @@ def test_ruff_reads_edited_python_from_either_payload(tmp_path):
 @pytest.mark.unit
 def test_stop_does_not_block_twice_in_one_turn():
     assert _run("openspec", {"stop_hook_active": True}) is None
+
+
+def _chart_event(mode, *, session="synthetic-session", turn="synthetic-turn", env=None, **payload):
+    value = {"session_id": session, "turn_id": turn, **payload}
+    return _run(mode, value, env=env)
+
+
+def _chart_post(tool_name, tool_input, tool_response, *, env):
+    _chart_event("chart-post", tool_name=tool_name, tool_input=tool_input,
+                 tool_response=tool_response, env=env)
+
+
+@pytest.mark.unit
+def test_chart_draw_gate_requires_tratto_preflight_validation_label_and_reopen(tmp_path):
+    env = {"TRADINGAGENTS_CHART_GATE_DIR": str(tmp_path)}
+    assert _chart_event(
+        "chart-prompt", prompt="QQQ 차트에 가격선 드로잉 추가해", env=env,
+    ) is None
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__tratto__draw_horizontal",
+        tool_input={"symbol": "QQQ", "price": 643.28, "label": "QQQ $643.28"}, env=env,
+    ) == "deny"
+
+    for tool, response in (
+        ("mcp__tratto__get_drawing_guide", {"ok": True}),
+        ("mcp__tratto__get_chart_summary", {"data": {"symbol": "QQQ", "interval": "day"}}),
+        ("mcp__tratto__read_drawings", {"data": {"symbol": "QQQ", "drawings": []}}),
+    ):
+        _chart_post(tool, {}, response, env=env)
+    _chart_post("Bash", {"command": "tradingagents chart-check --run-dir /tmp/chart"},
+                {"exit_code": 0}, env=env)
+
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__tratto__draw_horizontal",
+        tool_input={"symbol": "QQQ", "price": 643.28}, env=env,
+    ) == "deny"
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__tratto__draw_horizontal",
+        tool_input={"symbol": "QQQ", "price": 643.28, "label": "tc-2026-11-23-horizontal-1"}, env=env,
+    ) == "deny"
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__tratto__draw_horizontal",
+        tool_input={"symbol": "TQQQ", "price": 643.28, "label": "QQQ $643.28"}, env=env,
+    ) == "deny"
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__tratto__draw_horizontal",
+        tool_input={"symbol": "QQQ", "price": 643.28, "label": "QQQ $643.28"}, env=env,
+    ) is None
+
+    _chart_post("mcp__tratto__draw_horizontal", {"symbol": "QQQ"}, {"ok": True}, env=env)
+    _chart_post("mcp__tratto__read_drawings", {},
+                {"data": {"symbol": "QQQ", "drawings": [{"type": "horizontal"}]}}, env=env)
+    _chart_post("Bash", {"command": "tradingagents chart-drawings-check --drawings /tmp/drawings.json"},
+                {"exit_code": 0}, env=env)
+    assert _chart_event(
+        "chart-stop", last_assistant_message="QQQ 차트 드로잉을 완료했습니다.", env=env,
+    ) is None
+
+
+@pytest.mark.unit
+def test_chart_gate_rejects_direct_yahoo_layout_edit(tmp_path):
+    env = {"TRADINGAGENTS_CHART_GATE_DIR": str(tmp_path)}
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__cua_repl__js",
+        tool_input={"code": "const url='finance.yahoo.com/chart/QQQ'; const drawings=layout.drawings; await app.paste(url + '#eyJ');"},
+        env=env,
+    ) == "deny"
+
+
+@pytest.mark.unit
+def test_chart_gate_blocks_canvas_writes_but_allows_read_only_and_tab_selection(tmp_path):
+    env = {"TRADINGAGENTS_CHART_GATE_DIR": str(tmp_path)}
+    assert _chart_event("chart-prompt", prompt="차트 선 그려줘", env=env) is None
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__cua_repl__js",
+        tool_input={"code": "await app.click([2100, 1316]);"}, env=env,
+    ) == "deny"
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__cua_repl__js",
+        tool_input={"code": "await app.drag([100, 200], [300, 400]);"}, env=env,
+    ) == "deny"
+    assert _chart_event(
+        "chart-pre", tool_name="mcp__cua_repl__js",
+        tool_input={"code": "await app.click(396); await app.getScreenshot();"}, env=env,
+    ) is None
+
+
+@pytest.mark.unit
+def test_chart_stop_requires_evidence_or_explicit_incomplete_report(tmp_path):
+    env = {"TRADINGAGENTS_CHART_GATE_DIR": str(tmp_path)}
+    assert _chart_event("chart-prompt", prompt="차트에 선 그려줘", env=env) is None
+    assert _chart_event(
+        "chart-stop", last_assistant_message="QQQ 선을 그려 완료했습니다.", env=env,
+    ) == "block"
+    assert _chart_event(
+        "chart-stop", last_assistant_message="Tratto MCP에 연결할 수 없어 차트 변경은 미완료입니다.", env=env,
+    ) is None
 
 
 def _load_guard():

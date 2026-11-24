@@ -7,12 +7,15 @@ text, so the files it touches are read from the patch headers.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +41,15 @@ HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)
 SHELLS = {"sh", "bash", "zsh"}
 CODE_FLAGS = {"-c", "-e"}
 ARCHIVE_STUB = "TBD - created by archiving change"
+CHART_DRAW_TOOL = re.compile(
+    r"mcp__[^\s]*tratto[^\s]*__(?:draw_[^\s]*|remove_drawing|clear_drawings|undo_drawing|delete_saved_drawing)$",
+    re.I,
+)
+CHART_BLOCKER = re.compile(
+    r"미완료|완료하지 못|진행하지 못|수행하지 못|실행하지 못|접근할 수 없|"
+    r"사용할 수 없|이용할 수 없|도구가 없|도구를 찾을 수 없|연결할 수 없|연결되지|"
+    r"실패했|막혔|중단|unavailable|unable to|cannot connect", re.I
+)
 
 
 def _pre_tool(decision: str, reason: str) -> None:
@@ -156,6 +168,215 @@ def openspec(payload: dict) -> None:
         print(json.dumps({"decision": "block", "reason": "\n".join(problems)}, ensure_ascii=False))
 
 
+def _chart_state_path(payload: dict) -> Path | None:
+    session = payload.get("session_id")
+    turn = payload.get("turn_id", "session")
+    if not session:
+        return None
+    key = hashlib.sha256(f"{session}:{turn}".encode()).hexdigest()
+    directory = Path(os.environ.get(
+        "TRADINGAGENTS_CHART_GATE_DIR", Path(tempfile.gettempdir()) / "tradingagents-chart-gate"
+    ))
+    return directory / f"{key}.json"
+
+
+def _chart_state(payload: dict) -> tuple[Path | None, dict | None]:
+    path = _chart_state_path(payload)
+    if path is None or not path.is_file():
+        return path, None
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return path, None
+    return path, state if state.get("turn_id") == payload.get("turn_id", "session") else None
+
+
+def _save_chart_state(path: Path | None, state: dict) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _flatten_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(_flatten_text(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return " ".join(_flatten_text(child) for child in value)
+    return ""
+
+
+def _successful_tool_response(response: object) -> bool:
+    if isinstance(response, dict):
+        if response.get("isError") is True or response.get("success") is False:
+            return False
+        return all(_successful_tool_response(value) for value in response.values())
+    if isinstance(response, list):
+        return all(_successful_tool_response(value) for value in response)
+    return True
+
+
+def _response_symbol(response: object) -> str | None:
+    text = _flatten_text(response) + json.dumps(response, ensure_ascii=False, default=str)
+    for pattern in (r'"symbol"\s*:\s*"([A-Z0-9.^=_-]+)"', r"\bSymbol:\s*([A-Z0-9.^=_-]+)"):
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).upper()
+    return None
+
+
+def _has_price_label(tool_input: dict) -> bool:
+    values = [tool_input.get("label"), tool_input.get("text")]
+    style = tool_input.get("style")
+    if isinstance(style, dict):
+        values.append(style.get("text"))
+    return any(isinstance(value, str) and re.search(r"\$\s*\d+(?:\.\d+)?", value) for value in values)
+
+
+def chart_prompt(payload: dict) -> None:
+    prompt = str(payload.get("prompt", ""))
+    drawing_request = re.search(
+        r"(?:차트|종목|QQQ|TQQQ).{0,30}(?:드로잉|그려|표시|선 추가|라벨 추가)"
+        r"|(?:드로잉|차트에 선|차트 선|라벨).{0,30}(?:추가|그려|진행|수정|표시)"
+        r"|chart.{0,20}(?:draw|annotation|label)",
+        prompt, re.I | re.S,
+    )
+    if not drawing_request:
+        return
+    path = _chart_state_path(payload)
+    if path is None:
+        return
+    _save_chart_state(path, {
+        "turn_id": payload.get("turn_id", "session"), "active": True, "guide": False,
+        "summary": False, "before_read": False, "data_validated": False,
+        "write_attempted": False, "write_done": False, "read_count": 0, "after_read": False,
+        "drawings_check": False,
+    })
+
+
+def chart_pre(payload: dict) -> None:
+    tool_name = str(payload.get("tool_name", ""))
+    tool_input = payload.get("tool_input") or {}
+    path, state = _chart_state(payload)
+    if CHART_DRAW_TOOL.search(tool_name):
+        if not state or not state.get("active"):
+            _pre_tool("deny", "차트 쓰기 요청이 기록되지 않았습니다. 사용자 요청 범위와 차트 작업을 먼저 확인하세요.")
+            return
+        state["write_attempted"] = True
+        missing = [name for name in ("guide", "summary", "before_read", "data_validated")
+                   if not state.get(name)]
+        if state.get("ticker_mismatch"):
+            missing.append("ticker_mismatch")
+        if not state.get("target_symbol"):
+            missing.append("target_symbol")
+        if missing:
+            _save_chart_state(path, state)
+            _pre_tool("deny", "Tratto 사전 단계가 빠졌습니다: " + ", ".join(missing) +
+                      ". get_drawing_guide, get_chart_summary, read_drawings와 chart-check 성공 후 다시 호출하세요.")
+            return
+        requested_symbol = next((str(tool_input[key]).upper()
+                                 for key in ("symbol", "ticker", "ticker_symbol") if tool_input.get(key)), None)
+        if requested_symbol and requested_symbol != state["target_symbol"]:
+            _save_chart_state(path, state)
+            _pre_tool("deny", f"대상 종목 불일치: 차트 조회는 {state['target_symbol']}, "
+                      f"드로잉 입력은 {requested_symbol}입니다.")
+            return
+        leaf = tool_name.rsplit("__", 1)[-1].lower()
+        if leaf.startswith("draw_") and not _has_price_label(tool_input):
+            _save_chart_state(path, state)
+            _pre_tool("deny", "드로잉 입력에 가격이 표시되는 연결 라벨이 없습니다. '$643.28' 형식처럼 가격을 포함하세요.")
+            return
+        _save_chart_state(path, state)
+        return
+
+    if "cua_repl" in tool_name.lower():
+        text = _flatten_text(tool_input)
+        canvas_edit = state and state.get("active") and (
+            re.search(r"\.click\s*\(\s*\[\s*-?\d", text)
+            or re.search(r"\.drag\s*\(", text)
+            or re.search(r"\.pressKey\s*\([^)]*['\"](?:Delete|BackSpace)['\"]", text, re.I)
+        )
+        if canvas_edit:
+            _pre_tool("deny", "차트 작업 중 CUA 좌표 클릭·드래그·삭제키는 차트 쓰기를 우회할 수 있어 차단했습니다. "
+                      "탭은 요소 인덱스로 선택하고, 차트 표시는 Tratto MCP를 사용하세요.")
+            return
+        direct_layout_edit = (
+            re.search(r"finance\.yahoo\.com/chart/", text, re.I)
+            and re.search(r"drawings|location\.hash|(?:^|\W)v0(?:\W|$)|#eyJ", text, re.I)
+            and re.search(r"paste|typeText|setValue|location\.hash\s*=|goto\s*\(", text, re.I)
+        )
+        if direct_layout_edit:
+            _pre_tool("deny", "Yahoo 차트의 저장 레이아웃·드로잉 상태 직접 편집은 금지합니다. "
+                      "Tratto MCP를 사용하고, 사용할 수 없으면 변경을 중단해 미완료로 보고하세요.")
+
+
+def chart_post(payload: dict) -> None:
+    path, state = _chart_state(payload)
+    if not state or not state.get("active"):
+        return
+    tool_name = str(payload.get("tool_name", ""))
+    tool_input = payload.get("tool_input") or {}
+    response = payload.get("tool_response")
+    if not _successful_tool_response(response):
+        return
+    if "tratto" in tool_name.lower():
+        leaf = tool_name.rsplit("__", 1)[-1].lower()
+        if "get_drawing_guide" in leaf:
+            state["guide"] = True
+        elif "get_chart_summary" in leaf:
+            state["summary"] = True
+            state["target_symbol"] = _response_symbol(response)
+        elif "read_drawings" in leaf:
+            observed_symbol = _response_symbol(response)
+            if observed_symbol and state.get("target_symbol") and observed_symbol != state["target_symbol"]:
+                state["ticker_mismatch"] = True
+            state["read_count"] = state.get("read_count", 0) + 1
+            if state.get("write_done") or state["read_count"] > 1:
+                state["after_read"] = True
+            else:
+                state["before_read"] = True
+        elif leaf.startswith("draw_") or leaf in {
+            "remove_drawing", "clear_drawings", "undo_drawing", "delete_saved_drawing",
+        }:
+            state["write_done"] = True
+    if tool_name == "Bash":
+        command = str(tool_input.get("command", ""))
+        exit_code = response.get("exit_code") if isinstance(response, dict) else None
+        if ("chart-check" in command and "chart-drawings-check" not in command
+                and exit_code == 0):
+            state["data_validated"] = True
+        if "chart-drawings-check" in command:
+            state["drawings_check"] = exit_code == 0
+    _save_chart_state(path, state)
+
+
+def chart_stop(payload: dict) -> None:
+    if payload.get("stop_hook_active"):
+        return
+    path, state = _chart_state(payload)
+    complete = state and all(state.get(key) for key in (
+        "active", "guide", "summary", "before_read", "data_validated", "after_read", "drawings_check",
+    ))
+    if not state or not state.get("active") or complete:
+        if path:
+            path.unlink(missing_ok=True)
+        return
+    last_message = str(payload.get("last_assistant_message", ""))
+    if CHART_BLOCKER.search(last_message):
+        if path:
+            path.unlink(missing_ok=True)
+        return
+    print(json.dumps({
+        "decision": "block",
+        "reason": "차트 드로잉 요청은 chart-drawings-check 성공 후에만 완료로 보고할 수 있습니다. "
+                  "증거가 부족하면 확인 범위와 미완료 사유를 명시하세요.",
+    }, ensure_ascii=False))
+
+
 def network(payload: dict) -> None:
     """Run the safe API doctor once when a new Codex session starts."""
     candidates = (
@@ -236,4 +457,8 @@ if __name__ == "__main__":
     if mode == "live":
         live(payload, codex=sys.argv[2:] == ["codex"])
     else:
-        {"env": env, "network": network, "ruff": ruff, "openspec": openspec}[mode](payload)
+        {
+            "env": env, "network": network, "ruff": ruff, "openspec": openspec,
+            "chart-prompt": chart_prompt, "chart-pre": chart_pre,
+            "chart-post": chart_post, "chart-stop": chart_stop,
+        }[mode](payload)

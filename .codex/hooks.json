@@ -16,6 +16,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/guard.py\" chart-pre",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Bash|apply_patch",
         "hooks": [
           {
@@ -38,6 +48,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "mcp__.*|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/guard.py\" chart-post",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "apply_patch",
         "hooks": [
           {
@@ -53,8 +73,24 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/guard.py\" chart-stop",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/guard.py\" openspec",
             "timeout": 120
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$(git rev-parse --show-toplevel)/.claude/hooks/guard.py\" chart-prompt",
+            "timeout": 10
           }
         ]
       }

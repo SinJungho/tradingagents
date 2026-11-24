@@ -16,6 +16,8 @@ tradingagents chart-zones --tickers AAPL,MSFT --json
 
 종목마다 실제 MCP tool schema를 먼저 확인한 뒤 다음 작업을 수행한다.
 
+Tratto 도구가 현재 세션에서 제공되지 않거나 연결이 실패하면, [MCP 서버 연결](#mcp-서버-연결)의 소유 세션 확인·현재 세션 연결 절차를 먼저 마친다. 연결을 복구할 수 없으면 쓰기를 멈춘다. Yahoo URL hash, base64 레이아웃, 브라우저 저장 상태를 직접 편집하거나 CUA 좌표 클릭·드래그·삭제키로 Tratto 쓰기를 대신하지 않는다. 데이터·탭을 읽은 범위와 연결 실패 단계를 기록하고 차트 변경은 미완료로 보고한다.
+
 1. [MCP 서버 연결](#mcp-서버-연결)을 먼저 확인한다. 사용자 탭에서 대상 ticker를 확인해 재사용한다. 탐색이 필요하면 `open_chart`를 쓴다. `get_drawing_guide`와 `read_drawings`를 먼저 확인한다.
 2. 실제 schema를 확인하고 `set_periodicity(interval=1, timeUnit="day")`로 일봉을 지정한다.
 3. `set_range`로 `check_windows`의 가장 이른 날짜부터 최신 날짜까지 표시한다.
@@ -36,9 +38,9 @@ tradingagents chart-check --run-dir <run_dir> --chart-csv <run_dir>/chart_check.
 1. `get_drawing_guide`를 읽고, 현재 MCP schema에서 필요한 색상, 날짜, 가격, ID 필드 형식을 확인한다.
 2. `read_drawings`로 대상 종목·주기의 기존 객체를 확인한다. 같은 종류와 날짜·가격 좌표에 요청된 스타일이 맞으면 재사용한다. 색·실선·연장 변경은 같은 역할의 이전 객체만 교체한다. 삭제는 명시된 대상에만 적용한다.
 3. 출력된 날짜·가격을 그대로 사용한다. support는 낮은 계열 색, resistance는 높은 계열 색, inside는 중립색 점선으로 표시한다. 사각형의 날짜 범위는 첫 touch date부터 마지막 확인 봉까지다. inside에는 `break_above`와 `break_below`를 함께 표시하고 단일 invalidation을 만들지 않는다.
-4. 각 드로잉에 `tc-<as_of>-<type>-<rank>` 형태의 label을 붙인다. 실제 tool schema의 식별자/anchor 형식이 다르면 schema를 따르며 변환된 값과 결과를 기록한다. 모델은 좌표를 재계산하거나 반올림하지 않는다.
+4. 각 드로잉에 `tc-<as_of>-<type>-<rank>` 형태의 label 식별자를 붙인다. 가격선에는 가격을 포함한 화면 표시 라벨도 연결한다. 식별자만 있거나 축의 가격 태그만 보이는 것은 화면 라벨을 붙인 것으로 간주하지 않는다. 실제 tool schema의 식별자/anchor 형식이 다르면 schema를 따르며 변환된 값과 결과를 기록한다. 모델은 좌표를 재계산하거나 반올림하지 않는다.
 5. `read_drawings`를 다시 호출해 각 drawing ID와 실제 start/end date·price가 CLI 출력과 일치하는지 비교한다. 불일치면 완료로 표시하지 않고 `drawings.json`에 실패와 관찰값을 남긴다.
-6. `<run_dir>/drawings.json`에 chart-check 결과, 시도 횟수, 표시한 zone labels, drawing IDs, anchor 비교 결과를 기록하고 [같은 탭에서 완료 여부를 검증한다](#5-완료-검증과-보고).
+6. `<run_dir>/drawings.json`에 chart-check 결과, 시도 횟수, 표시한 zone labels, drawing IDs, anchor 비교 결과를 기록하고 [같은 탭에서 완료 여부를 검증한다](#5-완료-검증과-보고). `chart-drawings-check` 종료 코드가 0일 때만 완료로 보고한다.
 
 역할별 색을 요청하면 현재 차트의 색을 조사해 팔레트를 정한다. 역할이 같은 수평선과 라벨 테두리는 같은 색으로 맞추고, 회복선·재시험 구간·분할 기준·추세선처럼 다른 역할에는 다른 색을 쓴다. 사용자 지정 색·모양과 기존 의미를 우선한다. “수평선과 추세선만”이라면 그 종류만 추가하고 이미 보존하기로 한 라벨은 유지한다.
 
