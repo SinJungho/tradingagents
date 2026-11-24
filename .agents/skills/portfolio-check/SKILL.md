@@ -5,6 +5,10 @@ description: 토스 계좌 보유 현황을 읽기 전용으로 조회해 포트
 
 # 포트폴리오 점검
 
+## 실행 모델
+
+일반 시나리오에는 `--model-preset standard`, 명시적 `--full-workflow`에는 `--model-preset deep`을 적용한다. 조회 전용은 `--no-scenarios`를 사용한다. [저장소 모델 설정](../../../AGENTS.md#리서치-모델-선택)을 따른다.
+
 `AGENTS.md`의 Portfolio check 흐름을 따른다. 브로커 접근은 조회 전용이며 주문 관련 명령은 실행하지 않는다.
 
 ## 1. 실행 조건 확인

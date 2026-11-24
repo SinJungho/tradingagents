@@ -5,6 +5,10 @@ description: TradingAgents 심층·빠른 tier에 쓸 LLM을 벤치마크·비�
 
 # 모델 선정과 교체
 
+## 실행 모델
+
+리서치 실행 기본값은 AGENTS.md의 모델 표와 `--model-preset`을 따른다. 사용자가 모델·추론을 지정하면 프리셋을 생략한다. [저장소 모델 설정](../../../AGENTS.md#리서치-모델-선택)을 따른다.
+
 ## 1. 근거 수집
 
 - 금융 에이전트 성능: Vals Finance Agent(https://www.vals.ai/benchmarks/finance_agent) 등 공시 검색·계산 도구를 쓰는 벤치마크를 우선한다. 측정일, harness, 점수, 토큰·시간 비용을 함께 기록한다.

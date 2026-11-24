@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 import typer
 from langsmith.run_helpers import tracing_context
 
+from cli.model_preset import ModelPresetOption
 from tradingagents.api_diagnostics import format_api_failure
 from tradingagents.dataflows.errors import drain_source_failures
 from tradingagents.portfolio.analytics import (
@@ -919,6 +920,7 @@ def live(
         str | None,
         typer.Option("--orders-from", help="Order history start date (YYYY-MM-DD; maximum 90-day window)."),
     ] = None,
+    model_preset: ModelPresetOption = None,
     orders_to: Annotated[
         str | None,
         typer.Option("--orders-to", help="Order history end date (YYYY-MM-DD; cannot be in the future)."),

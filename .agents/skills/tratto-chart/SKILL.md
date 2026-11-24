@@ -5,6 +5,10 @@ description: 미국 종목의 차트·기술적 분석, 일봉 지지·저항, 5
 
 # Tratto 차트 운영
 
+## 실행 모델
+
+차트 계산 CLI는 모델 없이 실행한다. 드로잉·해석은 Codex 작업 시작 시 지정 가능하면 GPT-6.2 Sol `medium`을 사용한다. 복합 작업은 `high`를 선택할 수 있다. [저장소 모델 설정](../../../AGENTS.md#리서치-모델-선택)을 따른다.
+
 - 미국 종목의 일봉 가격 구조·지지·저항은 `tradingagents chart-zones --tickers <T> --json`으로 시작한다. 계산에는 [chart-zones v1 계약](references/chart-zone-params.md)을 적용한다. 가격 구간의 차트 대조나 표시 요청은 [운영 절차](references/operations.md)를 따른다.
 - 최근 5년 OHLCV, 전후 5봉 피벗, 장기·최근 추세선 분석 요청은 [5년 일봉 분석](references/five-year-ohlcv.md)을 따른다. 검증된 Tratto 원자료에서 Python으로 구간과 추세선 앵커를 계산한다.
 - 보조 도구 12개는 [사용·정리 기준](references/operations.md#4-보조-도구-선택)에 따라 고른다. 기존 항목도 현재 질문과 설정을 검토한 뒤 재사용하고 정리 후보와 실제 화면 상태를 기록한다. 표시 범위는 분석 범위와 별도로 정한다.

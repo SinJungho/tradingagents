@@ -37,6 +37,23 @@
 ## OpenSpec
 
 - Before implementing a feature or behavior change, inspect `openspec/` and create or update the relevant OpenSpec change with its proposal, requirements/scenarios, and tasks.
+## 리서치 모델 선택
+
+새 세션에서도 아래 실행 기본값을 적용한다. 사용자가 모델·추론 수준을 직접 지정하거나 기존 설정으로 재현을 요청하면 해당 설정을 우선하고 프리셋을 생략한다. 프리셋은 공급자를 바꾸지 않으며 GPT tier에만 적용한다.
+
+| 작업 | 실행 설정 |
+| --- | --- |
+| 종목 종합 분석 | 첫 인자를 `--ticker`로 유지하고 `--model-preset standard` 추가 |
+| 보유 반영 시나리오·일반 포트폴리오 점검 | `portfolio live --model-preset standard` |
+| 명시적 심층 포트폴리오 점검 | `portfolio live --full-workflow --model-preset deep` |
+| 미국장 보고서 해석 | `market-report --model-preset standard`. 상충하는 근거의 심층 검토를 요청하면 `deep` |
+| 종목 탐색·차트 계산·보유 및 공시 조회·자료 전용 보고서·팩터 및 가격 구간 백테스트 | 기존 계산·조회 전용 경로 |
+| 전체 그래프 백테스트 | 평가 대상 실행과 같은 모델·추론 설정 |
+
+`standard`는 quick GPT-6 Luna, deep GPT-6.1 Sol, 공통 `medium`이다. `deep`은 quick GPT-6.2 Sol, deep GPT-6.1 Sol, 공통 `high`다. 현재 공급자에서 해당 모델을 쓸 수 없으면 확인된 모델로 사용자 지정 설정을 적용하고 실제 사용값을 보고한다. 기존 LLM 실행 승인 절차를 따른다.
+
+차트 드로잉·기술적 해석은 Codex 작업을 시작할 때 모델을 지정할 수 있으면 GPT-6.2 Sol `medium`을 기본으로 사용한다. 복합 드로잉과 상충하는 추세 검토는 `high`를 선택할 수 있다. 이미 시작된 세션에서는 현재 모델로 작업하며, 스킬 호출로 세션 모델이 전환됐다고 보고하지 않는다.
+
 - Keep implementation and task status aligned with the approved OpenSpec scope; validate the change and archive it when complete.
 - Follow `openspec/config.yaml` for artifact language and formatting conventions.
 

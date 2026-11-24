@@ -8,6 +8,7 @@ from rich.markup import escape
 
 from cli.chatgpt_auth import auth_app
 from cli.display import console
+from cli.model_preset import ModelPresetOption
 from cli.models import AnalystType, AssetType
 from cli.portfolio import portfolio_app
 from cli.prompts import filter_analysts_for_asset_type, parse_analysts
@@ -51,6 +52,7 @@ app.add_typer(zone_backtest_app, name="zone-backtest")
 
 @app.command("market-report")
 def market_report(
+    model_preset: ModelPresetOption = None,
     output_dir: str = typer.Option("results/market-reports", "--output-dir", help="보고서 저장 디렉터리"),
     llm: bool = typer.Option(True, "--llm/--no-llm", help="기존 deep 모델로 근거 기반 해석 작성"),
 ) -> None:
@@ -134,6 +136,7 @@ def analyze(
     analysts: str = typer.Option(
         None, "--analysts", help="Comma-separated analysts, e.g. market,news; skips the prompt"
     ),
+    model_preset: ModelPresetOption = None,
     save: bool | None = typer.Option(
         None, "--save/--no-save", help="Save the report under results_dir without asking"
     ),

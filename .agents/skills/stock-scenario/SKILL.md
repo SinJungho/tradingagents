@@ -5,6 +5,10 @@ description: 지정한 종목을 TradingAgents 그래프로 분석하고 매수�
 
 # 종목 분석과 투자 시나리오
 
+## 실행 모델
+
+종목 및 보유 반영 분석에는 `--model-preset standard`를 적용한다. 심층 포트폴리오 요청에는 portfolio-check의 심층 프리셋을 따른다. [저장소 모델 설정](../../../AGENTS.md#리서치-모델-선택)을 따른다.
+
 `AGENTS.md`의 Single-stock analysis / Investment scenario 흐름을 따른다.
 
 ## 1. 경로 선택
