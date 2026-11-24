@@ -16,7 +16,7 @@
 | Investment scenario | 매수·보유·매도 또는 비중 판단 | `stock-scenario`의 `portfolio live --symbol <T>` 경로로 보유를 반영한다. 보유 JSON을 지정하면 `--portfolio`를 쓴다. |
 | Stock discovery | 팩터 비교·후보 발굴 | `stock-discovery`의 `discover --tickers` 또는 `--universe`. 후속 종목 분석은 사용자가 선택한 후보에만 적용한다. |
 | Portfolio check | 보유 조회·포트폴리오 점검 | `portfolio-check`에서 조회 전용은 `portfolio live --no-scenarios`, 일반 점검은 `portfolio live`, 명시적 심층 점검은 `--full-workflow`를 쓴다. |
-| Chart analysis | 차트·기술적 분석 | `tratto-chart`. 미국 종목의 일봉 가격 구조·지지·저항은 `chart-zones --tickers <T> --json`, 5년 일봉·장기 및 최근 추세선은 OHLCV·전후 5봉 피벗 절차를 쓴다. |
+| Chart analysis | 차트·기술적 분석 | `tratto-chart`. 미국 종목의 일봉 가격 구조·지지·저항은 `chart-zones --tickers <T> --json`, 장기 일봉은 OHLCV·피벗 절차, 당일 흐름의 장기 상승선 비교는 `chart-trendlines`를 쓴다. |
 | Chart verification and drawing | 대상 차트 검증·표시 | `tratto-chart`에서 가격 구간 대조는 `chart-check`, 표시는 해당 분석 경로에서 검증한 좌표를 쓴다. |
 | Backtest | 그래프 판단·팩터 신호·차트 가격 구간의 과거 성과 평가 | `backtest-eval`에서 각각 `backtest`, `style-backtest`, `zone-backtest run --period validate`를 쓴다. |
 | Disclosure snapshot | 13F 기관 보유·미국 하원 주식 보유 및 거래 공시 | `portfolio-disclosures`의 공식 SEC·하원 공시 조회 절차를 적용한다. |
@@ -25,8 +25,11 @@
 
 - 차트 분석은 종목·봉 주기·기준 거래일·가격 조정 기준을 확인하고 가격 구조·추세·거래량에서 시작한다. 필요한 지표만 사용하며, 현재가를 포함하는 구간은 상단·하단 이탈 조건을 각각 설명한다.
 - 차트 변경은 표시를 요청받은 범위에서만 수행한다. 실제 대상 탭과 기존 객체를 확인하고, 검증한 좌표와 같은 객체는 재사용한다. 삭제는 사용자가 명시한 대상에만 적용한다.
-- 변경 전후 `read_drawings`와 실제 사용자 탭을 다시 열어 확인한 상태를 캡처와 `drawings.json`에 남긴다. 증거가 빠지면 확인된 단계까지만 보고한다. 차트 데이터 일치, 드로잉 확인, 통계적 예측력은 각각 보고한다.
+- 변경 전후 `read_drawings`와 실제 Yahoo Finance 탭의 재열기 상태를 캡처와 `drawings.json`에 남긴다. 요청받은 색·선 모양·라벨·연장 끝점과 화면에 보인 일봉 수를 함께 확인한다. 원래 탭 복귀 요청을 지키고, 차트 데이터·표시·통계적 예측력을 각각 보고한다.
+- 박스·선은 요청 역할과 현재 분석에 필요한지 기존 목록과 대조한 뒤 정리한다. 수평 기준선·회복선·장기 추세선 등 역할별 색을 구분하고 가격 라벨을 연결한다. 라벨이 겹치거나 잘리면 가격 좌표를 유지한 채 차트 안쪽으로 옮기고 재열기 후 확인한다.
+- 장기 추세선은 검증된 일봉의 단계별 후보 수, 선정 앵커, 반응·이탈 근거와 같은 시작점 대안을 보고한다. 조건식상 후보 순위를 완벽성이나 통계적 예측력으로 표현하지 않는다.
 - 미국장 답변은 판단과 핵심 근거 2~3개, 판단 변경 조건부터 제시한다. 시장 폭이 미확인이면 상승 확산 판단을, 보유 수량이나 평가액이 미확인이면 비중 조정 수치를 유보한다. 상세 근거는 기존 보고서에 연결한다. 골드만삭스 자료와 판교불패 영상은 당일 쟁점과 관련될 때 원자료와 대조한다.
+- BofA 현금 비중·Bull & Bear 및 Goldman Panic 수치는 자체 리서치 원자료에 직접 접근한 것처럼 쓰지 않는다. 당일 쟁점과 관련될 때 발행시각과 기준일이 보이는 공개 보도에서 기관의 수치를 직접 인용하고 2차 출처로 표시한다. 값·시점·출처가 검증되지 않으면 미확인으로 둔다. HY OAS는 FRED가 인용하는 ICE BofA 시계열을 사용한다. VIX/VIX3M 비율은 공통 Cboe 종가에서 계산한다. Zweig Breadth Thrust는 NYSE 상승·하락 종목의 검증된 원자료와 산식을 확보한 경우만 계산하고, SPY 보유 종목 시장 폭으로 대체하지 않는다. CNN Fear & Greed는 공개 원문과 조회 기준 시각을 확인한 보조 지표로만 쓰며 구성요소를 별도 지표와 같은 값으로 취급하지 않는다.
 
 - Do not ask for what the repo, config, or conversation already answers. Ask only for a missing input that changes the result (ticker, date, holdings).
 - Read-only Toss account reads with `tradingagents portfolio live` (including its default LLM analysis) are pre-authorized by the repo owner; do not ask again. Run other real LLM analysis (`--ticker`, `backtest`, `market-report`) only when the user explicitly asks; otherwise give the command to run.
@@ -34,9 +37,6 @@
 - Do not state target prices or returns without a computed basis. Report data as-of times and gaps as unknown, not zero.
 - These rules govern the coding agent only; they do not make the app run analyses on its own.
 
-## OpenSpec
-
-- Before implementing a feature or behavior change, inspect `openspec/` and create or update the relevant OpenSpec change with its proposal, requirements/scenarios, and tasks.
 ## 리서치 모델 선택
 
 새 세션에서도 아래 실행 기본값을 적용한다. 사용자가 모델·추론 수준을 직접 지정하거나 기존 설정으로 재현을 요청하면 해당 설정을 우선하고 프리셋을 생략한다. 프리셋은 공급자를 바꾸지 않으며 GPT tier에만 적용한다.
@@ -54,6 +54,9 @@
 
 차트 드로잉·기술적 해석은 Codex 작업을 시작할 때 모델을 지정할 수 있으면 GPT-6.2 Sol `medium`을 기본으로 사용한다. 복합 드로잉과 상충하는 추세 검토는 `high`를 선택할 수 있다. 이미 시작된 세션에서는 현재 모델로 작업하며, 스킬 호출로 세션 모델이 전환됐다고 보고하지 않는다.
 
+## OpenSpec
+
+- Before implementing a feature or behavior change, inspect `openspec/` and create or update the relevant OpenSpec change with its proposal, requirements/scenarios, and tasks.
 - Keep implementation and task status aligned with the approved OpenSpec scope; validate the change and archive it when complete.
 - Follow `openspec/config.yaml` for artifact language and formatting conventions.
 

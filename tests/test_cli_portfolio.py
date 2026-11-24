@@ -74,9 +74,15 @@ def test_decision_context_contains_normalized_positions_but_not_buying_power():
 
 
 def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(monkeypatch):
+    from tradingagents.agents.context import get_instrument_context_from_state
+
     calls = []
     now = datetime(2026, 11, 10, 10, tzinfo=UTC)
-    snapshot = {"window": {"cutoff": "2026-11-10T10:00:00+00:00"}, "evidence": [], "investigations": []}
+    snapshot = {
+        "window": {"cutoff": "2026-11-10T10:00:00+00:00"},
+        "evidence": [{"id": "E0050", "series": "DFII5", "label": "5년 실질금리", "value": 1.2}],
+        "investigations": [],
+    }
 
     class FakeCompiledGraph:
         def compile(self):
@@ -160,6 +166,9 @@ def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(mon
     assert all(state["portfolio"] is portfolio_context for state in initial_states)
     assert "market_research" not in initial_states[0]
     assert all(state["market_research"] is snapshot for state in initial_states[1:])
+    context = get_instrument_context_from_state({**initial_states[-1], "instrument_context": "Synthetic ETF"})
+    assert "DFII5" in context and "E0050" in context
+    assert "BTC and ETH, HY and IG credit" in context and "20:00 ET" in context
     assert workflow.get_market_research() is snapshot
     assert [call for call in calls if call[0] == "collect"] == [("collect", "2026-11-10", now)]
     assert decisions[1] == TradingDecisionResult(
@@ -169,6 +178,41 @@ def test_full_workflow_builder_uses_existing_graph_without_persisting_memory(mon
         "Synthetic final decision",
         "Buy",
     )
+
+
+def test_light_workflow_collects_and_shares_us_market_evidence(monkeypatch):
+    now = datetime(2026, 11, 24, 1, tzinfo=UTC)
+    snapshot = {"window": {}, "evidence": [], "investigations": []}
+    calls = []
+    states = []
+
+    def collect(trade_date, as_of):
+        calls.append((trade_date, as_of))
+        return snapshot
+
+    def analyst(_spec, _factory, _rounds):
+        def run(state):
+            states.append(state.get("market_research"))
+            return {"market_report": "Synthetic market evidence"}
+        return run
+
+    monkeypatch.setattr(portfolio_cli, "_now", lambda: now)
+    monkeypatch.setattr("tradingagents.agents.context.resolve_instrument_identity", lambda _ticker: {})
+    monkeypatch.setattr("tradingagents.graph.trading_graph.load_market_research", collect)
+    monkeypatch.setattr("tradingagents.graph.trading_graph.TradingAgentsGraph", lambda **kwargs: SimpleNamespace(
+        config=kwargs["config"], quick_thinking_llm=object(),
+        resolve_instrument_context=lambda *_: "Synthetic instrument",
+        propagator=SimpleNamespace(create_initial_state=lambda *_args, **_kwargs: {"messages": []}),
+    ))
+    monkeypatch.setattr("tradingagents.graph.setup._analyst_graph", analyst)
+
+    workflow, _ = portfolio_cli._make_scenario_workflow(3)
+    workflow.symbol_analyzer(SimpleNamespace(symbol="005930.KS", market_country="KR"))
+    workflow.symbol_analyzer(SimpleNamespace(symbol="TQQQ", market_country="US"))
+    workflow.symbol_analyzer(SimpleNamespace(symbol="QQQ", market_country="US"))
+    assert calls == [("2026-11-24", now)]
+    assert states == [None] * 3 + [snapshot] * 6
+    assert workflow.get_market_research() is snapshot
 
 
 def test_run_scenarios_attaches_full_decisions_and_passes_whole_book(monkeypatch):

@@ -25,10 +25,14 @@ from tradingagents.dataflows.market_report import (
     BLS_CALENDAR_URL,
     CENSUS_CALENDAR_URL,
     COMPANIES,
+    CREDIT_SPREADS,
     FUTURES,
     INDICES,
+    MACRO,
+    MARKETS,
     NEWS_FETCH_LIMIT,
     SECTORS,
+    TREASURY_RATES,
     PublicMarketData,
     error_reason,
     finite,
@@ -136,7 +140,56 @@ def collect_market_research(trade_date, *, now=None, provider=None):
     investigations = collect_investigations(provider, window, calendar, evidence.rows, evidence.add)
     # The graph state can be checkpointed or traced by an external model runner.
     rows = [model_safe_evidence(row) for row in evidence.rows]
-    return {'window': window, 'evidence': rows, 'investigations': investigations}
+    return {'window': window, 'evidence': rows, 'investigations': investigations,
+            'coverage': scenario_market_coverage(evidence.rows, investigations)}
+
+
+def scenario_market_coverage(evidence, investigations):
+    """Fail closed on missing required rows and distinguish gaps from skipped conditions."""
+    required_labels = (
+        *INDICES.values(),
+        *(f'{label} ({symbol}, ETF 대용치)' for symbol, label in SECTORS.items()),
+        'S&P 500 구성 종목 시장 폭',
+        *(MACRO[series] for series in sorted(TREASURY_RATES - {'T10Y2Y'})),
+        *(label for label, _ in MARKETS.values()),
+        'BTC/USD (Bitstamp)', 'ETH/USD (Bitstamp)',
+        *CREDIT_SPREADS.values(),
+        'Cboe SPX·SPXW 풋/콜 거래량 비율',
+        'Cboe 1개월/3개월 변동성 비율 (VIX/VIX3M)',
+        'ES=F 가격·거래량·미결제약정', 'NQ=F 가격·거래량·미결제약정',
+        '연방기금 선물 내재 월평균 금리 대용치',
+    )
+    required_investigations = (
+        'derivatives', 'credit', 'release_reaction', 'weekly_flows',
+        'rates', 'equity_drivers', 'financial_stress',
+    )
+    rows = {row['label']: row for row in evidence}
+    for label in ('SPY 보유 종목 대용치의 시장 폭 (공식 S&P 500 지수 구성 아님)',
+                  '현재 S&P 500 구성 종목 표본의 시장 폭'):
+        if label in rows:
+            rows['S&P 500 구성 종목 시장 폭'] = rows[label]
+    gaps = []
+    for label in required_labels:
+        row = rows.get(label, {})
+        status = row.get('status') or 'not_run'
+        if status == 'available':
+            if (row.get('value') is not None and safe_url(row.get('source'))
+                    and (row.get('observed_at') or row.get('observation_period'))):
+                continue
+            status = 'partial'
+        gaps.append({'label': label, 'status': status,
+                     'evidence_ids': [row['id']] if row.get('id') else [],
+                     'reason': row.get('reason') or ('필수 자료 일부 미확인' if row else '필수 결과가 생성되지 않음')})
+    keys = {item.get('key') for item in investigations}
+    gaps.extend(
+        {'label': key, 'status': 'not_run', 'reason': '조사 조건 또는 결과가 기록되지 않음'}
+        for key in required_investigations if key not in keys
+    )
+    gaps.extend({**item, 'status': item.get('status') or 'not_run'} for item in investigations
+                if item.get('status') not in ('available', 'none_found')
+                and not (item.get('status') == 'not_run' and not item.get('required')
+                         and item.get('key') not in ('derivatives', 'credit')))
+    return {'status': 'partial' if gaps else 'complete', 'gaps': gaps}
 
 
 def collect_report(provider=None, now=None):
@@ -453,7 +506,20 @@ def safe_url(url):
 CONTEXT_FIELDS = ('id', 'label', 'value', 'unit', 'observation_period', 'observed_at', 'published_at',
                   'scheduled_at', 'vintage', 'source', 'source_kind', 'status', 'reason', 'note',
                   'symbol', 'series', 'change_bp', 'change_pct', 'change_points', 'return_1d', 'return_5d', 'return_20d',
-                  'price_basis', 'contract_month', 'rollover', 'scope', 'data_scope', 'inputs')
+                  'price_basis', 'contract_month', 'rollover', 'scope', 'data_scope', 'inputs',
+                  'previous_observed_at', 'previous_observation_period', 'comparison_observations', 'comparison_gaps')
+
+ETF_CROSS_ASSET_GUIDANCE = (
+    "For deep US ETF analysis, cover commodities (WTI, gold, copper), BTC and ETH, HY and IG credit, "
+    "the dollar, volatility and derivatives. For each, report evidence IDs, observation dates, "
+    "effects on the decision and why any evidence is missing or restricted. Compare five- and "
+    "ten-year real yields only on matched dates. Label the equity snapshot cutoff and the separate "
+    "20:00 ET market-report cutoff. Interpret the supplied Cboe VIX/VIX3M ratio as inverted only above 1.0, "
+    "and identify an unwind only when the supplied prior and current observations cross back below 1.0. "
+    "Use BofA, Goldman, CNN or Zweig values only when verified evidence with source and date is supplied; "
+    "never invent or proxy a proprietary score or an unverified breadth thrust. Use releases after the "
+    "equity cutoff only for next-session decisions. "
+)
 
 
 def model_safe_evidence(row):
@@ -497,13 +563,17 @@ def render_market_research(research):
     if not research:
         return ''
     cutoff = research['window'].get('cutoff')
-    lines = [f"미국 시장 기준 {_et(cutoff) if cutoff else '미확인'}", '',
+    coverage = research.get('coverage')
+    lines = [f"종목 분석 기준 {_et(cutoff) if cutoff else '미확인'}",
+             '시장 보고서 기준 20:00 ET. 종목 기준 이후 공개된 자료는 다음 장 판단에 적용합니다.', '',
+             *([f"공통 시황 완료 상태 · `{coverage['status']}`",
+                *investigation_lines([gap for gap in coverage['gaps'] if 'key' not in gap]), ''] if coverage else []),
              *investigation_lines(research['investigations']), '',
              '| 근거 | 관측 | 공개 | 자료 상태 | 출처 |', '| --- | --- | --- | --- | --- |']
     for row in research['evidence']:
         link = f"[{cell(row['source_kind'])}](<{row['source']}>)" if safe_url(row['source']) else '확인 불가'
         display_value = cell(row['value'])
-        for key in ('change_bp', 'change_points', 'return_1d', 'return_5d', 'return_20d'):
+        for key in ('change_bp', 'change_bp_5d', 'change_points', 'return_1d', 'return_5d', 'return_20d'):
             if key in row:
                 display_value += f" · {cell(LABELS[key])} {cell(row[key])}"
         note = ' · '.join(row[key] for key in ('reason', 'note') if row.get(key))
@@ -597,6 +667,7 @@ def write_narrative(report, config=None, llm=None):
              f'허용하는 section은 {", ".join(NARRATIVE_SECTIONS)}이다. '
              f'{LONG_TERM}은 이익 전망·실질금리·신용 여건에, '
              f'{TRADER}은 확인된 촉매·가격 반응·무효화 조건에 초점을 둔다. '
+             '5년·10년 실질금리는 관측일이 같을 때 비교한다. '
              '두 관점을 각각 쓰고 각 관점의 모든 주장에 change_condition(결론이 달라질 관측 조건)을 붙인다. '
              '없는 자료는 확인하지 못했다고 쓰고 상충하는 근거를 다룬다. CFTC 포지션, ETF 순발행, '
              '딜러 감마 추정이나 증권사 고객 표본만으로 당일 매도 주체를 특정하지 않는다. '
@@ -632,6 +703,8 @@ def write_narrative(report, config=None, llm=None):
 
 
 LABELS = {'close': '종가', 'return_1d': '1거래일 %', 'return_5d': '5거래일 %', 'return_20d': '20거래일 %',
+          'change_bp_5d': '5거래일 대비 bp', 'observation_period': '관측일', 'observed_at': '관측 시각',
+          'value': '가격·수치', 1: '1거래일', 5: '5거래일', 20: '20거래일',
           'return_24h': '24시간 %', 'return_7d': '7일 %', 'return_30d': '30일 %', 'change_bp': '비교 기준 대비 bp',
           'change_points': '전일 대비 포인트',
           'price': '가격', 'volume_observed': '관측 거래량', 'open_interest': '미결제약정',
@@ -676,7 +749,7 @@ def perspective_lines(section, evidence):
     if section == LONG_TERM:
         groups = (
             ('이익 전망', lambda row: '이익 전망' in row['label'] or '가이던스' in row['label']),
-            ('실질금리', lambda row: row.get('series') == 'DFII10' or '실질금리' in row['label']),
+            ('실질금리', lambda row: '실질금리' in row['label']),
             ('신용 여건', lambda row: row.get('series') in ('BAMLH0A0HYM2', 'BAMLC0A0CM') or 'OAS' in row['label']),
         )
         condition = '실질금리와 신용 스프레드가 함께 상승하거나 업종 이익 전망이 하향되면 장기 판단을 다시 검토합니다.'
@@ -785,6 +858,7 @@ def render_markdown(report):
                           f"발표: {cell(item['published_at'])} · 조회: {cell(item['retrieved_at'])}"]
                 for key, label in [('observed_at', '관측 시각'), ('change_pct', '직전 거래일 대비 %'),
                                    ('change_bp', '비교 기준 대비 bp'), ('change_points', '전일 대비 포인트'),
+                                   ('change_bp_5d', LABELS['change_bp_5d']),
                                    ('contract_month', '계약월'),
                                    ('rollover', '롤오버'), ('data_scope', '집계 범위'), ('scope', '집계 범위'),
                                    ('previous_observed_at', '직전 관측'), ('change_reason', '변화율 제한'),
@@ -796,6 +870,8 @@ def render_markdown(report):
                           for key in ('return_1d', 'return_5d', 'return_20d') if key in item]
                 if trends:
                     lines += [' · '.join(trends)]
+                if comparisons := item.get('comparison_observations'):
+                    lines += [f'비교 관측: {cell(comparisons)}']
                 if section == '다음 거래일' and item['status'] == 'available':
                     lines += ['관전 조건: 공식 예정 시각을 재확인하고, 발표 후 관련 자산 반응을 위 지수·금리 기준과 비교합니다. 결과 방향은 예측하지 않습니다.']
                 if section == '업종':

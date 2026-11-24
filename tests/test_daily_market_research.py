@@ -101,6 +101,30 @@ def test_commodity_calculations_use_continuous_prices_and_preserve_unknown_roll(
     assert '연속 선물' in copper['note'] and '롤 영향 가능' in copper['note']
 
 
+def test_cross_assets_compare_friday_17_et_to_exact_historical_bar(calendar):
+    cutoff = pd.Timestamp('2026-11-20T20:00:00-05:00')
+    sessions = calendar.sessions_in_range('2026-10-01', cutoff.date())
+
+    def intraday(symbol, day):
+        bars = [('16:55', 120.)] if day == cutoff.date() else [('16:55', 100.), ('19:55', 50.)]
+        if day == sessions[-6].date():
+            bars = [('16:50', 800.), ('19:55', 50.)]
+        return pd.DataFrame({'Close': [value for _, value in bars]},
+                            index=pd.DatetimeIndex([f'{day} {minute}' for minute, _ in bars], tz=ET).tz_convert('UTC'))
+
+    rows, add, missing = recorder()
+    add_cross_assets(SimpleNamespace(intraday=intraday), sessions, cutoff, add, missing)
+    assert len(rows) == 4
+    for row in rows:
+        assert row['change_pct'] == pytest.approx(20.)
+        assert row['observed_at'].endswith('T17:00:00-05:00')
+        assert row['previous_observed_at'].endswith('T17:00:00-05:00')
+        if row['symbol'].endswith('=F'):
+            assert row['return_5d'] is None and row['return_20d'] == pytest.approx(20.)
+            assert 5 not in row['comparison_observations']
+            assert '17:00 ET' in row['comparison_gaps'][5]
+
+
 def test_ten_year_trigger_requires_same_clock_time_on_prior_session():
     day, prior = date(2026, 11, 20), date(2026, 11, 19)
     cutoff = pd.Timestamp('2026-11-20T20:00:00-05:00')
@@ -136,7 +160,9 @@ def test_fred_observation_comparison_keeps_dates_and_rejects_nonadjacent(calenda
     provider = SimpleNamespace(macro=macro)
     add_macro(provider, day, calendar, add, missing)
     rates = {row['series']: row for row in rows}
-    assert {'DGS5', 'DFII10'} <= set(rates)
+    assert {'DGS5', 'DFII5', 'DFII10'} <= set(rates)
+    assert rates['DGS5']['label'] != rates['DFII5']['label']
+    assert rates['DFII5']['change_bp'] == rates['DFII10']['change_bp'] == 10
     assert rates['DGS10']['change_bp'] == 10
     assert rates['DGS10']['previous_observation_period'] == '2026-11-18'
     prior_day = '2026-11-17'
@@ -145,15 +171,16 @@ def test_fred_observation_comparison_keeps_dates_and_rejects_nonadjacent(calenda
     assert next(row for row in rows if row['series'] == 'DGS10')['change_bp'] is None
 
 
-def test_alfred_fallback_requires_requested_vintage_and_excludes_future(monkeypatch):
+@pytest.mark.parametrize('series', ('DGS10', 'DFII5'))
+def test_alfred_fallback_requires_requested_vintage_and_excludes_future(monkeypatch, series):
     day = date(2026, 11, 20)
     monkeypatch.setattr(market_data.fred, '_fred_today', lambda: '2026-11-21')
     fetch = Mock(return_value=SimpleNamespace(text=(
-        'observation_date,DGS10_20261119\n2026-11-18,4.00\n2026-11-19,4.10\n2026-11-20,9.99\n'
+        f'observation_date,{series}_20261119\n2026-11-18,4.00\n2026-11-19,4.10\n2026-11-20,9.99\n'
     )))
     monkeypatch.setattr(market_data, 'get_with_retry', fetch)
     provider = market_data.PublicMarketData()
-    result = provider.treasury_vintage('DGS10', day)
+    result = provider.treasury_vintage(series, day)
     assert fetch.call_args.kwargs['params']['vintage_date'] == '2026-11-19'
     assert result['value'] == 4.1
     assert result['previous'] == 4.

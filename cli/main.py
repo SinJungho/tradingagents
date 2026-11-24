@@ -408,6 +408,55 @@ def chart_check(
                    f"saved={root / 'chart_validation.json'}")
 
 
+@app.command("chart-trendlines")
+def chart_trendlines(
+    symbol: str = typer.Option(..., "--symbol", help="Ticker represented by the export"),
+    chart_csv: str = typer.Option(..., "--chart-csv", help="Single date,o,h,l,c,v Tratto CSV"),
+    start: str = typer.Option(..., "--start", help="First exchange session of the analysis window"),
+    as_of: str = typer.Option(..., "--as-of", help="Last completed exchange session"),
+    pivot_start: str = typer.Option(..., "--pivot-start", help="Earliest date for recent-cycle pivots"),
+    min_bars: int = typer.Option(756, "--min-bars", min=756, help="Minimum daily bars in the analysis window"),
+    chart_timezone: str = typer.Option("America/New_York", "--chart-timezone", help="IANA export timezone"),
+    compare_anchor: str | None = typer.Option(None, "--compare-anchor", help="Existing start date to compare"),
+    extend_to: str | None = typer.Option(None, "--extend-to", help="Exchange session for the drawing endpoint"),
+    json_output: bool = typer.Option(False, "--json", help="Print ranked candidates and evidence as JSON"),
+) -> None:
+    """Rank recent long-term rising trendlines from a completed daily export."""
+    from datetime import date
+    from pathlib import Path
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    from tradingagents.dataflows.chart_trendlines import compare_trendlines
+    from tradingagents.dataflows.symbols import normalize_symbol
+
+    try:
+        result = compare_trendlines(
+            Path(chart_csv).expanduser(), ticker=normalize_symbol(symbol), start=date.fromisoformat(start),
+            as_of=date.fromisoformat(as_of), pivot_start=date.fromisoformat(pivot_start),
+            chart_timezone=ZoneInfo(chart_timezone), min_bars=min_bars,
+            compare_anchor=date.fromisoformat(compare_anchor) if compare_anchor else None,
+            extend_to=date.fromisoformat(extend_to) if extend_to else None,
+        )
+    except (OSError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise typer.BadParameter(str(exc)) from None
+
+    if json_output:
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"{result['ticker']} {result['as_of']} | {result['status']} | bars={result['bars']}")
+        if result["counts"]:
+            typer.echo(" ".join(f"{stage}={count}" for stage, count in result["counts"].items()))
+        if result["selected"]:
+            selected = result["selected"]
+            end = selected["endpoint"]
+            typer.echo(f"as-of line={selected['as_of_line']} | close={selected['close_position']} | "
+                       f"endpoint={end['date']} {end['price']}")
+        elif result.get("reason"):
+            typer.echo(result["reason"])
+    if result["status"] != "ok":
+        raise typer.Exit(code=1)
+
+
 @app.command("chart-drawings-check")
 def chart_drawings_check(
     drawings: str = typer.Option(..., "--drawings", help="Path to the drawings.json evidence manifest"),

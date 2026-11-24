@@ -195,6 +195,7 @@ _MAX_RESEARCH_CHARS = 6000
 _MAX_NAME_CHARS = 160
 _SYNTHESIS_RETRY_INSTRUCTION = (
     "이전 응답이 형식 검증에 실패했습니다. 원래 요청에서 지정한 JSON 형식만 다시 반환하세요. "
+    "실패한 검사 항목은 `{check}`입니다. 모든 기간과 시나리오에서 관련 필드의 자료형과 값을 확인하세요. "
     "설명이나 코드 블록은 추가하지 마세요."
 )
 _WATCH_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,31}$")
@@ -797,9 +798,10 @@ def _case_from_payload(payload: object) -> ScenarioCase:
 
     def required_text(key: str) -> str:
         value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
+        text = _sanitize_text(value, limit=_MAX_RESEARCH_CHARS) if isinstance(value, str) else ""
+        if not text:
             raise ScenarioValidationError(f"case.{key}.required_text")
-        return _sanitize_text(value, limit=_MAX_RESEARCH_CHARS)
+        return text
 
     def text_list(key: str) -> tuple[str, ...]:
         value = payload.get(key)
@@ -902,15 +904,16 @@ def _synthesis_messages(
             "omitted_symbols": omitted_symbols,
         },
     }
+    market_instruction = ""
     if market_research is not None:
-        from tradingagents.market_report import market_research_context
+        from tradingagents.market_report import ETF_CROSS_ASSET_GUIDANCE, market_research_context
 
         payload["us_market_research"] = json.loads(market_research_context(market_research))
-    market_instruction = (
-        "For US market claims, cite evidence IDs and link relevant rates, sectors and earnings "
-        "to the affected instruments. State the limits and what observations could change the conclusion. "
-        if market_research is not None else ""
-    )
+        market_instruction = (
+            "For US market claims, cite evidence IDs and link relevant rates, sectors and earnings "
+            "to the affected instruments. State the limits and what observations could change the conclusion. "
+            + ETF_CROSS_ASSET_GUIDANCE
+        )
     return [
         SystemMessage(
             content=(
@@ -929,10 +932,16 @@ def _synthesis_messages(
                 "Do not provide probabilities, forecast returns, or target prices. "
                 "Frame any entry, additional-buying, or weight-adjustment discussion as "
                 "conditions for the user to review, never as an order instruction. "
-                "Return only JSON with keys summary and horizons; each horizon has name, "
-                "upside, base, and downside. Each case has investment_rationale, evidence, "
-                "catalysts, risks, watch_conditions, review_conditions, invalidation, and "
-                "portfolio_impact. Use string lists for the list fields."
+                "Return only JSON with a non-empty summary string and a horizons array. "
+                "Each configured horizon appears once, with its name and three case objects "
+                "named upside, base, and downside. Use this shape for all nine cases: "
+                '{"investment_rationale":"case rationale","evidence":["evidence item"],'
+                '"catalysts":["catalyst"],"risks":["risk"],"watch_conditions":["condition"],'
+                '"review_conditions":["condition"],"invalidation":["condition"],'
+                '"portfolio_impact":"conditional effect on the supplied portfolio"} '
+                "Both text fields must be non-empty strings. Always include portfolio_impact "
+                "in every case. If impact cannot be quantified, write a qualitative sentence "
+                "stating the effect or what remains unknown. Keep array fields as JSON arrays of strings."
             )
         ),
         HumanMessage(content=json.dumps(payload, ensure_ascii=False, default=_json_default)),
@@ -1005,7 +1014,12 @@ class PortfolioScenarioWorkflow:
             )
         report = result["report"]
         if self.get_market_research is not None:
-            report = replace(report, market_research=self.get_market_research())
+            research = self.get_market_research()
+            status = report.status
+            if (status == "complete" and research is not None
+                    and research.get("coverage", {}).get("status") != "complete"):
+                status = "partial"
+            report = replace(report, status=status, market_research=research)
         return report
 
     def _research_symbols(self, state: _ScenarioState) -> dict[str, object]:
@@ -1089,8 +1103,9 @@ class PortfolioScenarioWorkflow:
         response = self.scenario_llm.invoke(messages)
         try:
             summary, horizons = _parse_synthesis(_extract_text(response), self.config)
-        except ScenarioValidationError:
-            retry_messages = [*messages, HumanMessage(content=_SYNTHESIS_RETRY_INSTRUCTION)]
+        except ScenarioValidationError as exc:
+            retry_instruction = _SYNTHESIS_RETRY_INSTRUCTION.format(check=exc.check)
+            retry_messages = [*messages, HumanMessage(content=retry_instruction)]
             retry_response = self.scenario_llm.invoke(retry_messages)
             try:
                 summary, horizons = _parse_synthesis(

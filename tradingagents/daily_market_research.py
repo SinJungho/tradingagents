@@ -13,6 +13,8 @@ from tradingagents.dataflows.market_report import (
     INDICES,
     MACRO,
     MARKETS,
+    RATE_CHANGE_SERIES,
+    REAL_TREASURY_RATES,
     SECTORS,
     TREASURY_RATES,
     error_reason,
@@ -369,7 +371,7 @@ def add_macro(provider, day, calendar, add, missing):
             if pd.isna(period) or pd.isna(vintage) or period > vintage or vintage >= day or value is None:
                 raise ValueError('Invalid macro observation or vintage')
             change_fields = {}
-            if series == 'DGS10':
+            if series in RATE_CHANGE_SERIES:
                 prior = finite(data.get('previous'))
                 prior_day = data.get('previous_period')
                 same_basis = (prior is not None and prior_day and calendar.is_session(period)
@@ -400,6 +402,12 @@ def add_macro(provider, day, calendar, add, missing):
         dates = ', '.join(f"{row['label']} {row['observation_period']}" for row in rate_rows.values())
         for row in rate_rows.values():
             row['note'] += f'; 관련 금리 관측일이 서로 다름({dates})'
+    real_rates = [rate_rows[series] for series in REAL_TREASURY_RATES if series in rate_rows]
+    same_current = len(real_rates) == 2 and real_rates[0]['observation_period'] == real_rates[1]['observation_period']
+    if not same_current or any(row['change_bp'] is None for row in real_rates):
+        for row in real_rates:
+            row.update(change_bp=None, previous_value=None, previous_observation_period=None)
+            row['note'] += '; 5년·10년 실질금리의 공통 비교일 미확인'
 
 
 def last_intraday(provider, symbol, cutoff):
@@ -407,7 +415,7 @@ def last_intraday(provider, symbol, cutoff):
     frame = bounded_bars(provider.intraday(symbol, cutoff.date()), cutoff.normalize(), cutoff)
     if frame.empty:
         raise ValueError('완료 5분 봉 미확인')
-    return finite(frame['Close'].iloc[-1]), frame.index[-1] + BAR_SIZE
+    return finite(frame['Close'].iloc[-1]), frame.index[-1].tz_convert(ET) + BAR_SIZE
 
 
 def add_ten_year_proxy(provider, day, prior_day, cutoff, add):
@@ -456,9 +464,11 @@ def add_cross_assets(provider, sessions, cutoff, add, missing):
                 reasons[period] = '비교 거래일 미확인'
                 continue
             prior_day = sessions[-period-1].date()
-            prior_cutoff = pd.Timestamp(datetime.combine(prior_day, cutoff.time(), ET))
+            prior_cutoff = pd.Timestamp(datetime.combine(prior_day, observed.time(), ET))
             try:
                 previous, previous_at = last_intraday(provider, symbol, prior_cutoff)
+                if previous_at != prior_cutoff:
+                    raise ValueError('동일 시각 완료 봉 없음')
                 comparisons[period] = {'value': previous, 'observed_at': previous_at.isoformat()}
                 if level > 0 and previous > 0:
                     changes[period] = finite((level / previous - 1) * 100)
@@ -466,8 +476,8 @@ def add_cross_assets(provider, sessions, cutoff, add, missing):
                     reasons[period] = '비교 가격이 양수가 아니어서 가격 변화율 미계산'
             except Exception as exc:
                 label_period = '직전 거래일' if period == 1 else f'{period}거래일 전'
-                reasons[period] = f'{label_period} 기준 시각 이전 5분 봉 미확인({error_reason(exc)})'
-        note = '기준 시각 이전 마지막 완료 5분 봉; 비교 거래일에 같은 마감 시각을 적용'
+                reasons[period] = f'{label_period} {prior_cutoff:%H:%M} ET 완료 5분 봉 미확인({error_reason(exc)})'
+        note = '기준 이내 마지막 완료 5분 봉과 같은 ET 시각에 끝난 과거 봉을 비교'
         extra = {}
         if commodity:
             note += '; Yahoo 연속 선물이라 롤 영향 가능. 계약월·롤 일자·잠정치 여부 미확인'

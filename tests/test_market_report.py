@@ -73,10 +73,43 @@ def test_stock_and_report_share_daily_collection_at_different_cutoffs(
     assert '추가 점검' in mr.render_markdown(report)
 
 
+def test_scenario_coverage_distinguishes_missing_unavailable_and_skipped():
+    missing = mr.scenario_market_coverage([], [])['gaps']
+    evidence_labels = [gap['label'] for gap in missing if gap['reason'] == '필수 결과가 생성되지 않음']
+    evidence = [
+        {'id': f'E{i}', 'label': label, 'status': 'available', 'value': 1,
+         'source': 'https://example.com/synthetic', 'observation_period': '2026-11-12'}
+        for i, label in enumerate(evidence_labels)
+    ]
+    investigations = [
+        {'key': gap['label'], 'label': gap['label'], 'status': 'available'}
+        for gap in missing if gap['label'] not in evidence_labels
+    ]
+    equity = next(item for item in investigations if item['key'] == 'equity_drivers')
+    equity.update(status='not_run', required=False)
+    breadth = next(item for item in evidence if item['label'] == 'S&P 500 구성 종목 시장 폭')
+    breadth['label'] = 'SPY 보유 종목 대용치의 시장 폭 (공식 S&P 500 지수 구성 아님)'
+    assert mr.scenario_market_coverage(evidence, investigations) == {'status': 'complete', 'gaps': []}
+
+    equity.update(required=True)
+    evidence[0].update(status='unavailable', reason='공급자 실패')
+    result = mr.scenario_market_coverage(evidence[:-1], investigations)
+    assert result['status'] == 'partial'
+    assert {gap['label']: gap['status'] for gap in result['gaps']} == {
+        evidence[-1]['label']: 'not_run',
+        evidence[0]['label']: 'unavailable',
+        'equity_drivers': 'not_run',
+    }
+    evidence[1].pop('source')
+    assert any(gap['label'] == evidence[1]['label'] and gap['status'] == 'partial'
+               for gap in mr.scenario_market_coverage(evidence, investigations)['gaps'])
+
+
 def test_local_only_index_data_stays_in_local_report(monkeypatch):
     def daily(provider, window, calendar, add, missing):
         add('매크로', 'ICE OAS', 987.654, 'https://example.com/local', local_use_only=True,
-            change_bp=432.1, previous_value=567.8)
+            change_bp=432.1, previous_value=567.8, change_bp_5d=987.1,
+            comparison_observations={5: {'value': 876.54}})
         return None
 
     monkeypatch.setattr(mr, 'collect_daily', daily)
@@ -92,7 +125,70 @@ def test_local_only_index_data_stays_in_local_report(monkeypatch):
     research = mr.collect_market_research('2026-11-20', now=now, provider=object())
     assert research['evidence'][0]['value'] is None and research['evidence'][0]['id'] == 'E0001'
     for captured in (json.dumps(model_input), json.dumps(research), mr.market_research_context(report)):
-        assert all(value not in captured for value in ('987.654', '432.1', '567.8'))
+        assert all(value not in captured for value in ('987.654', '432.1', '567.8', '987.1', '876.54'))
+
+
+@pytest.mark.parametrize('gap', (None, 'prior', 'current'))
+def test_public_fred_macro_path_keeps_exact_credit_comparisons(monkeypatch, gap):
+    def request(endpoint, params):
+        if endpoint == 'series':
+            return {'seriess': [{'frequency': 'Daily', 'units': 'Percent'}]}
+        is_ig = params['series_id'] == 'BAMLC0A0CM'
+        points = [('2026-11-19', '3.99'), ('2026-11-18', '3.42'),
+                  ('2026-11-17', '3.11'), ('2026-11-12', '3.01'), ('2026-11-11', '2.99')]
+        if is_ig and gap == 'prior':
+            points[3] = ('2026-11-12', '.')
+        if is_ig and gap == 'current':
+            points.pop(0)
+        assert params['realtime_start'] == params['realtime_end'] == '2026-11-19'
+        return {'observations': [{'date': day, 'value': value} for day, value in points]}
+
+    monkeypatch.setattr(market_data.fred, '_fred_today', lambda: '2026-11-21')
+    monkeypatch.setattr(market_data.fred, '_request', request)
+    fake = FakePublicData()
+    fake.macro = PublicMarketData().macro
+    now = datetime.fromisoformat('2026-11-20T20:30:00-05:00')
+    report = mr.collect_report(fake, now)
+    rows = {row.get('series'): row for row in report['evidence']}
+    assert rows['DFII5']['change_bp'] == 57
+    for series in market_data.CREDIT_SPREADS:
+        row = rows[series]
+        assert row['change_bp'] == (None if gap == 'current' else 57)
+        assert row['change_bp_5d'] == (None if gap else 98)
+        assert row['previous_period'] == (None if gap == 'current' else '2026-11-18')
+        assert row['comparison_observations'].get(5, {}).get('observation_period') == (
+            None if gap else '2026-11-12')
+        if gap:
+            assert row['status'] == 'partial' and '미확인' in row['reason']
+    markdown = mr.render_markdown(report)
+    if not gap:
+        assert '5거래일 대비 bp: 98.000' in markdown and '관측일 2026-11-12' in markdown
+    stock = mr.collect_market_research('2026-11-20', now=now, provider=fake)
+    for row in (row for row in stock['evidence'] if row.get('series') in market_data.CREDIT_SPREADS):
+        assert row['value'] is None and 'comparison_observations' not in row
+
+
+def test_dfii5_collection_uses_alfred_and_excludes_mismatched_real_rate_deltas():
+    fake = FakePublicData()
+    macro = fake.macro
+
+    def primary(series, day):
+        if series == 'DFII5':
+            raise market_data.PublicDataError('FredNotConfiguredError')
+        return macro(series, day)
+
+    fake.macro = primary
+    fake.treasury_vintage = Mock(return_value={
+        'value': 1.2, 'period': '2026-11-11', 'unit': 'Percent', 'frequency': 'Daily',
+        'vintage': '2026-11-11', 'previous': 1.1, 'previous_period': '2026-11-10',
+    })
+    report = mr.collect_report(fake, fake.now)
+    rows = {row.get('series'): row for row in report['evidence']}
+    fake.treasury_vintage.assert_called_once_with('DFII5', date(2026, 11, 12))
+    assert rows['DFII5']['value'] == 1.2
+    assert rows['DFII5']['source_api'] == market_data.ALFRED_CSV_URL
+    for series in ('DFII5', 'DFII10'):
+        assert rows[series]['change_bp'] is None and '공통 비교일 미확인' in rows[series]['note']
 
 
 def test_public_market_data_prefers_spy_and_falls_back_to_wikipedia(monkeypatch):

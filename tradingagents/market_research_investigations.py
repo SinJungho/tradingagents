@@ -12,7 +12,10 @@ import pandas as pd
 from tradingagents.dataflows.market_report import (
     BEA_SCHEDULE_URL,
     BLS_CALENDAR_URL,
+    CBOE_VIX3M_HISTORY_URL,
+    CBOE_VIX_HISTORY_URL,
     COMPANIES,
+    CREDIT_SPREADS,
     ET,
     PublicMarketData,
     error_reason,
@@ -293,10 +296,46 @@ def _reaction_rows(provider, add, stamp, cutoff, event_id, **metadata):
             window_start=stamp.isoformat(), window_end=after.isoformat(), inputs=[event_id], **metadata)
 
 
-def _derivative_rows(provider, day, cutoff, add):
+def _derivative_rows(provider, day, cutoff, add, *, include_as_of=True, expected_period=None):
     add('매크로', 'Cboe SPX·SPXW 풋/콜 거래량 비율', None, CBOE,
-        status='unavailable', reason='Cboe 직접 조회가 403을 반환했고 공개 시각·자동 저장 조건을 확인하지 못함',
+        status='not_run', reason='Cboe 공개 시각·자동 저장 조건을 확인한 수집 경로가 없음',
         period=day.isoformat(), source_kind='official', data_scope='Cboe의 SPX+SPXW 거래량')
+    term_structure = getattr(provider, 'volatility_term_structure', None)
+    if callable(term_structure):
+        try:
+            values = term_structure(day, include_as_of=include_as_of)
+            ratio = finite(values['ratio'])
+            previous_ratio = finite(values['previous_ratio'])
+            transition = values['transition']
+            state = {
+                'inverted_today': '오늘 1개월 변동성 역전',
+                'back_below_one': '오늘 1.0 아래로 역전 해소',
+                'inverted': '역전 지속',
+                'below_one': '1.0 이하, 역전 아님',
+            }.get(transition, '상태 미확인')
+            note = (f"{state}. VIX/VIX3M={ratio:.4f}; "
+                    f"VIX {values['vix']:.4f}, VIX3M {values['vix3m']:.4f}; "
+                    f"전 공통 거래일 {values['previous_period']} 비율 {previous_ratio:.4f}. "
+                    '두 Cboe 일별 종가의 공통 날짜를 사용. CSV에는 분 단위 게시 시각이 없음.')
+            if not include_as_of:
+                note += ' 종목 분석 기준이 정규장 종가보다 이르므로 대상 거래일 종가는 제외.'
+            timely = values['period'] == (expected_period or day).isoformat()
+            status = 'available' if timely else 'partial'
+            add('매크로', 'Cboe 1개월/3개월 변동성 비율 (VIX/VIX3M)', ratio,
+                CBOE_VIX_HISTORY_URL, unit='비율', period=values['period'],
+                sources=[CBOE_VIX_HISTORY_URL, CBOE_VIX3M_HISTORY_URL],
+                source_kind='official', status=status,
+                reason=None if timely else '최신 공통 Cboe 관측일이 기준 시점의 예상 직전 종가와 다름', note=note,
+                data_scope='Cboe 일별 VIX 30일 및 VIX3M 약 3개월 종가',
+                calculations={'vix_close': values['vix'], 'vix3m_close': values['vix3m'],
+                              'ratio': ratio, 'previous_period': values['previous_period'],
+                              'previous_ratio': previous_ratio, 'transition': transition})
+        except Exception as exc:
+            add('매크로', 'Cboe 1개월/3개월 변동성 비율 (VIX/VIX3M)', None,
+                CBOE_VIX_HISTORY_URL, sources=[CBOE_VIX_HISTORY_URL, CBOE_VIX3M_HISTORY_URL],
+                period=day.isoformat(), source_kind='official', status='unavailable',
+                reason='동일 관측일의 VIX·VIX3M 종가를 검증하지 못함 (' + error_reason(exc) + ')',
+                note='Cboe 일별 이력의 게시 시각은 확인되지 않음.')
     for symbol in ('ES=F', 'NQ=F', 'ZQ=F'):
         values = {'price': None, 'volume_observed': None, 'open_interest': None, 'contract_month': None,
                   'rollover': None, 'preliminary': None}
@@ -418,7 +457,7 @@ def _macro_read(provider, series, day):
     return value, period, vintage, row
 
 
-def _macro_row(provider, series, label, day, add, *, scope=None, max_age=10, local_use_only=False):
+def _macro_row(provider, series, label, day, add, *, scope=None, max_age=10):
     value = period = vintage = previous = change = None
     try:
         value, period, vintage, raw = _macro_read(provider, series, day)
@@ -433,7 +472,7 @@ def _macro_row(provider, series, label, day, add, *, scope=None, max_age=10, loc
             note += ' ' + scope
         return add('추가 조사', label, value, FRED + series, unit=raw['unit'], period=stamp,
                    vintage=vintage.isoformat(), source_kind='official_vintage', note=note,
-                   series=series, previous_value=previous, previous_period=previous_period, local_use_only=local_use_only,
+                   series=series, previous_value=previous, previous_period=previous_period,
                    change_bp=change, status='stale' if stale else 'available',
                    reason='마지막 관측이 비교 범위보다 오래됨' if stale else None)
     except Exception as exc:
@@ -442,18 +481,61 @@ def _macro_row(provider, series, label, day, add, *, scope=None, max_age=10, loc
                    series=series, source_kind='official_vintage', note=scope)
 
 
-def _credit_rows(provider, day, add):
-    return [
-        _macro_row(provider, series, label, day, add,
-                   scope='ICE Data Indices, LLC의 ICE BofA OAS를 FRED에서 인용. ICE 저작권 자료로 수치는 로컬 검토용.',
-                   local_use_only=True)
-        for series, label in (('BAMLH0A0HYM2', '미국 하이일드 회사채 OAS'),
-                              ('BAMLC0A0CM', '미국 투자등급 회사채 OAS'))
-    ]
+def _credit_rows(provider, day, calendar, add):
+    quotes, failures = {}, {}
+    for series in CREDIT_SPREADS:
+        try:
+            quotes[series] = _macro_read(provider, series, day)
+        except Exception as exc:
+            failures[series] = error_reason(exc)
+
+    horizons = (1, 5)
+    paired_dates, gaps = {}, {}
+    periods = {quote[1] for quote in quotes.values()}
+    for horizon in horizons:
+        if failures or len(periods) != 1:
+            gaps[horizon] = f'{horizon}거래일 비교에 필요한 HY·IG 최신 공통 관측일 미확인'
+            continue
+        period = next(iter(periods))
+        sessions = calendar.sessions
+        if pd.Timestamp(period) not in sessions or (position := sessions.get_loc(str(period))) < horizon:
+            gaps[horizon] = f'{horizon}거래일 비교 기준일 미확인'
+            continue
+        prior = sessions[position - horizon].date().isoformat()
+        if any(finite(raw.get('observations', {}).get(prior)) is None for _, _, _, raw in quotes.values()):
+            gaps[horizon] = f'{horizon}거래일 전 {prior} HY·IG 공통 관측 미확인'
+            continue
+        paired_dates[horizon] = prior
+
+    note = ('ICE Data Indices, LLC의 ICE BofA OAS를 FRED에서 인용. 수치는 로컬 검토용. '
+            '기준 전일까지의 빈티지를 사용하며 분 단위 공개 시각은 미확인.')
+    for series, label in CREDIT_SPREADS.items():
+        if series in failures:
+            add('추가 조사', label, None, FRED + series, status='unavailable',
+                reason=f'기준 이내 빈티지 미확인 ({failures[series]})', series=series,
+                source_kind='official_vintage', note=note)
+            continue
+        value, period, vintage, raw = quotes[series]
+        comparisons = {}
+        for horizon, prior in paired_dates.items():
+            previous = finite(raw['observations'][prior])
+            comparisons[horizon] = {'observation_period': prior, 'value': previous,
+                                    'change_bp': round(100 * (value - previous), 8)}
+        one_day = comparisons.get(1, {})
+        stale = (day - period).days > 10
+        reasons = ['마지막 관측이 비교 범위보다 오래됨'] if stale else []
+        add('추가 조사', label, value, FRED + series, unit=raw['unit'], period=period.isoformat(),
+            vintage=vintage.isoformat(), source_kind='official_vintage', series=series, note=note,
+            local_use_only=True, previous_value=one_day.get('value'),
+            previous_period=one_day.get('observation_period'), change_bp=one_day.get('change_bp'),
+            change_bp_5d=comparisons.get(5, {}).get('change_bp'),
+            comparison_observations=comparisons, comparison_gaps=gaps,
+            status='stale' if stale else 'partial' if gaps else 'available',
+            reason=' · '.join([*reasons, *gaps.values()]) or None)
 
 
 def _credit_confirmation(rows):
-    if not all(row['status'] == 'available' for row in rows):
+    if not all(row['status'] in ('available', 'partial') for row in rows):
         return []
     first, second = rows
     if (first['observation_period'] != second['observation_period']
@@ -639,13 +721,17 @@ def collect_investigations(provider, window, calendar, evidence, add):
             status = ('unavailable' if not statuses or statuses == {'unavailable'}
                       else 'partial' if statuses - {'available', 'none_found'} else 'available')
         investigations.append({'key': key, 'label': label, 'status': status, 'reason': reason,
+                               'required': bool(reasons),
                                'evidence_ids': [row['id'] for row in items], 'trigger_evidence_ids': list(trigger_ids)})
         return items
 
-    def missing(label, source, reason, **kwargs):
-        return add('추가 조사', label, None, source, status='unavailable', reason=reason, **kwargs)
+    def missing(label, source, reason, *, status='unavailable', **kwargs):
+        return add('추가 조사', label, None, source, status=status, reason=reason, **kwargs)
 
-    run('derivatives', '일간 파생상품', ['매 거래일'], lambda: _derivative_rows(provider, day, cutoff, add))
+    run('derivatives', '일간 파생상품', ['매 거래일'],
+        lambda: _derivative_rows(provider, day, cutoff, add,
+                                 include_as_of=not window.get('analysis_mode', False),
+                                 expected_period=(previous if window.get('analysis_mode', False) else day)))
 
     candidates, calendar_errors = _calendar_releases(provider, day)
     official, original_errors = _official_release_sources(day) if public else ({}, {})
@@ -704,8 +790,10 @@ def collect_investigations(provider, window, calendar, evidence, add):
     market_reason = [why for _, why in (*equity, *rates)]
     trigger_ids = [key for key, _ in (*equity, *rates)] + [
         row['id'] for row in event_results if row['label'].endswith(' 발표')]
-    credit = run('credit', '하이일드·투자등급 신용 스프레드', weekly_reason + market_reason + event_reason,
-                 lambda: _credit_rows(provider, day, add), trigger_ids)
+    credit_reasons = ['매 거래일']
+    credit = run('credit', '하이일드·투자등급 신용 스프레드',
+                 credit_reasons + weekly_reason + market_reason + event_reason,
+                 lambda: _credit_rows(provider, day, calendar, add), trigger_ids)
     credit_stress = _credit_confirmation(credit) if len(credit) == 2 else []
 
     def weekly_rows():
@@ -714,10 +802,12 @@ def collect_investigations(provider, window, calendar, evidence, add):
         else:
             missing('CFTC TFF 레버리지 펀드 포지션', CFTC, '공개 파생 자료 공급 경로 미제공',
                     source_kind='official')
-        missing('ICI ETF 순발행 추정', ICI, '공개 HTML 직접 조회 403. 당시 발표본의 공개 시각·개정 이력 미확인',
-                source_kind='industry_estimate', data_scope='ICI 주간 업계 전체 순발행 추정, 월간 실제 집계와 구분')
+        missing('ICI ETF 순발행 추정', ICI, '당시 발표본의 공개 시각·개정 이력을 확인한 수집 경로가 없음',
+                status='not_run', source_kind='industry_estimate',
+                data_scope='ICI 주간 업계 전체 순발행 추정, 월간 실제 집계와 구분')
         missing('업종 이익 전망 수정·가이던스', SEC,
-                '업종별 과거 시점의 공개 컨센서스 변동 및 가이던스 집계 미확인', source_kind='official_filings')
+                '과거 시점의 공개 컨센서스와 가이던스 집계를 대조하는 수집 경로가 없음',
+                status='not_run', source_kind='official_filings')
         _filing_rows(provider, day, cutoff, add)
 
     run('weekly_flows', '주간 수급·이익 전망', weekly_reason, weekly_rows)
@@ -731,8 +821,8 @@ def collect_investigations(provider, window, calendar, evidence, add):
             missing('최근 미 재무부 중장기 국채 입찰 결과', AUCTIONS, '공개 입찰 공급 경로 미제공',
                     source_kind='official')
         missing('금리 급변 시 회의별 선물 내재 기대', FEDWATCH,
-                '공개 FedWatch 자료의 자동 이용 제한. 현재 보고의 연속 ZQ는 월평균 대용치이며 회의별 확률 미확인',
-                source_kind='official', related_evidence_ids=[
+                '공개 FedWatch 자료의 자동 이용 제한. 연속 ZQ는 월평균 대용치',
+                status='not_run', source_kind='official', related_evidence_ids=[
                     row['id'] for row in evidence if row.get('symbol') == 'ZQ=F'
                 ])
 
@@ -741,12 +831,18 @@ def collect_investigations(provider, window, calendar, evidence, add):
     def equity_rows():
         if not last_session:
             _filing_rows(provider, day, cutoff, add)
-        missing('관련 증권사 리서치 공개 원문', SEC,
-                '증권사 원문·공개 시점 직접 대조 필요. 검색 경로와 인용 기준은 공통 스킬 참조',
-                source_kind='manual_research')
-        missing('CTA·변동성 목표·딜러 감마·레버리지 ETF 수급', CFTC,
-                '당일 실제 집계·프라임 브로커 고객 표본·모형 추정의 검증된 원문 미확인',
-                source_kind='manual_research', note='주간 포지션·감마 모형에서 당일 매도 주체를 확정할 수 없음.')
+        for label, source in (
+            ('관련 증권사 리서치 공개 원문', None),
+            ('CTA·변동성 목표·딜러 감마·레버리지 ETF 수급', CFTC),
+            ('BofA Global Fund Manager Survey 현금 비중', None),
+            ('BofA Bull & Bear', None),
+            ('Goldman Panic', None),
+            ('CNN Fear & Greed 원문', 'https://www.cnn.com/markets/fear-and-greed'),
+            ('Zweig Breadth Thrust용 NYSE 상승·하락 원자료', None),
+        ):
+            add('추가 조사', label, None, source, status='not_run',
+                reason='자동 수집 범위 밖이며 공개 원문을 직접 대조해야 함', source_kind='manual_research',
+                note='주간 포지션·감마 모형에서 당일 매도 주체를 확정할 수 없음.' if source == CFTC else None)
         _currency_row(provider, calendar, session, cutoff, add)
 
     run('equity_drivers', '주식 급변·신용 불안 원문 조사', [why for _, why in (*equity, *credit_stress)],

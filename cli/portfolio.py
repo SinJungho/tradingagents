@@ -699,13 +699,28 @@ def _make_scenario_workflow(
 ) -> tuple[PortfolioScenarioWorkflow, list[TradingDecisionResult]]:
     from langgraph.graph import END, START, StateGraph
 
+    from tradingagents.agents.context import is_us_equity_or_etf, resolve_instrument_identity
     from tradingagents.default_config import DEFAULT_CONFIG
+    from tradingagents.graph.trading_graph import TradingAgentsGraph, load_market_research
+
+    market_research = None
+    now = _now()
+    trade_date = _today_kst(now).isoformat()
+
+    def shared_market_research(research_input):
+        nonlocal market_research
+        ticker = research_input.symbol
+        if research_input.market_country != "US" or not is_us_equity_or_etf(
+            ticker, resolve_instrument_identity(ticker)
+        ):
+            return None
+        if market_research is None:
+            market_research = load_market_research(trade_date, now)
+        return market_research
 
     if full_workflow:
-        from tradingagents.agents.context import is_us_equity_or_etf, resolve_instrument_identity
         from tradingagents.agents.rating import run_rating
         from tradingagents.dataflows.config import run_config
-        from tradingagents.graph.trading_graph import TradingAgentsGraph, load_market_research
 
         selected_analysts = ("market", "social", "news", "fundamentals")
         graph_config = copy.deepcopy(DEFAULT_CONFIG)
@@ -719,12 +734,7 @@ def _make_scenario_workflow(
         # Portfolio reports must not read or write the per-symbol decision memory.
         full_graph = graph.graph_setup.setup_graph(selected_analysts, memory_node=None).compile()
         decisions: list[TradingDecisionResult] = []
-        market_research = None
-        now = _now()
-        trade_date = _today_kst(now).isoformat()
-
         def analyze_full_workflow(research_input) -> str:
-            nonlocal market_research
             ticker = research_input.symbol
             initial_state = graph.create_run_state(
                 ticker,
@@ -732,12 +742,8 @@ def _make_scenario_workflow(
                 asset_type="stock",
                 portfolio=portfolio_context,
             )
-            if research_input.market_country == "US" and is_us_equity_or_etf(
-                ticker, resolve_instrument_identity(ticker)
-            ):
-                if market_research is None:
-                    market_research = load_market_research(trade_date, now)
-                initial_state["market_research"] = market_research
+            if shared := shared_market_research(research_input):
+                initial_state["market_research"] = shared
             with run_config(graph.config):
                 state = full_graph.invoke(
                     initial_state,
@@ -808,7 +814,6 @@ def _make_scenario_workflow(
     from tradingagents.agents.state import AgentState
     from tradingagents.graph.analyst_execution import build_analyst_execution_plan
     from tradingagents.graph.setup import _analyst_graph
-    from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     graph = TradingAgentsGraph(
         selected_analysts=("market", "news", "fundamentals"),
@@ -838,7 +843,7 @@ def _make_scenario_workflow(
 
     def analyze_symbol(research_input) -> str:
         ticker = research_input.symbol
-        trade_date = _today_kst().isoformat()
+        shared = shared_market_research(research_input)
         instrument_context = graph.resolve_instrument_context(ticker, "stock")
         initial_state = graph.propagator.create_initial_state(
             ticker,
@@ -847,6 +852,8 @@ def _make_scenario_workflow(
             past_context="",
             instrument_context=instrument_context,
         )
+        if shared:
+            initial_state["market_research"] = shared
         state = research_graph.invoke(
             initial_state,
             config={"recursion_limit": _SYMBOL_RESEARCH_STEP_LIMIT},
@@ -873,6 +880,7 @@ def _make_scenario_workflow(
                 max_symbol_researches=max_symbols,
                 horizons=horizons,
             ),
+            get_market_research=lambda: market_research,
         ),
         [],
     )
@@ -912,6 +920,7 @@ def _run_scenarios(
 
 @portfolio_app.command("live")
 def live(
+    model_preset: ModelPresetOption = None,
     account_ordinal: Annotated[
         int | None,
         typer.Option("--account-ordinal", min=1, help="Select the account by its displayed 1-based ordinal."),
@@ -920,7 +929,6 @@ def live(
         str | None,
         typer.Option("--orders-from", help="Order history start date (YYYY-MM-DD; maximum 90-day window)."),
     ] = None,
-    model_preset: ModelPresetOption = None,
     orders_to: Annotated[
         str | None,
         typer.Option("--orders-to", help="Order history end date (YYYY-MM-DD; cannot be in the future)."),

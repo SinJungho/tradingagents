@@ -193,6 +193,97 @@ def test_missing_as_of_bar_in_tratto_csv_blocks_completion(evidence):
     assert "trend: incomplete" in result.output
 
 
+@pytest.mark.parametrize("case", [
+    "complete", "style_mismatch", "duplicate_role_color", "old_remains", "label_mismatch",
+    "minimum_not_met", "incorrect_visible_count", "summary_wrong_symbol",
+])
+def test_replace_style_roles_labels_and_view(evidence, case):
+    path, manifest = evidence
+    artifacts = path.parent / "artifacts"
+    item = manifest["items"][0]
+    old = {**DRAWING, "raw": {**DRAWING["raw"], "col": "#FFE066", "ptrn": "dashed", "lw": 3}}
+    new = {**DRAWING, "raw": {**DRAWING["raw"], "col": "#F472D0", "ptrn": "solid", "lw": 3}}
+    label = {"type": "callout", "raw": {
+        "d0": "20261120000000000", "v0": 110.5, "col": "#FFE066", "bc": "#FFE066",
+        "text": "%ED%9A%8C%EB%B3%B5%20%24110.50",
+    }}
+    item.update(
+        action="replace", role="long_uptrend", previous={
+            "anchors": item["anchors"], "style": {"color": "#FFE066", "pattern": "dashed"},
+        },
+        style={"color": "#f472d0", "pattern": "solid", "line_width": 3},
+    )
+    manifest["role_colors"] = {"long_uptrend": "#F472D0", "recovery": "#FFE066"}
+    manifest["items"].append({
+        **item, "id": "label", "type": "callout", "action": "add", "role": "recovery",
+        "anchors": [item["anchors"][0]],
+        "style": {"text": "회복 $110.50", "color": "#FFE066", "border_color": "#FFE066"},
+    })
+    manifest["reopened_view"] = {
+        "tab_id": TAB, "chart_timezone": "Asia/Seoul", "summary_path": "artifacts/summary.json",
+        "first_date": "2026-11-18", "last_date": DAY, "visible_bars": 3, "minimum_bars": 3,
+    }
+    summary = {
+        "ok": True, "data": {"symbol": TICKER, "interval": "day", "total_bars_loaded": 100,
+                             "loaded_range": {"start": "2026-11-16T15:00:00Z", "end": "2026-11-19T15:00:00Z"}},
+    }
+    write_read(artifacts / "before.json", [old])
+    write_read(artifacts / "after.json", [new, label])
+    reopened = [new, label]
+    issue = None
+    if case == "style_mismatch":
+        reopened[0] = {**new, "raw": {**new["raw"], "ptrn": "dotted"}}
+        issue = "reads.reopened.style_mismatch"
+    elif case == "duplicate_role_color":
+        manifest["role_colors"]["support"] = "#ffe066"
+        issue = "role_colors.invalid_or_repeated"
+    elif case == "old_remains":
+        reopened.append(old)
+        issue = "reads.reopened.replacement_expected_0_old_found_1"
+    elif case == "label_mismatch":
+        reopened[1] = {**label, "raw": {**label["raw"], "text": "wrong"}}
+        issue = "reads.reopened.style_mismatch"
+    elif case == "minimum_not_met":
+        manifest["reopened_view"]["minimum_bars"] = 2500
+        issue = "reopened_view.minimum_bars_not_met"
+    elif case == "incorrect_visible_count":
+        manifest["reopened_view"]["visible_bars"] = 100
+        issue = "reopened_view.visible_count_mismatch"
+    elif case == "summary_wrong_symbol":
+        summary["data"]["symbol"] = "OTHER"
+        issue = "reopened_view.target_mismatch"
+    write_read(artifacts / "reopened.json", reopened)
+    write_json(artifacts / "summary.json", summary)
+    write_json(path, manifest)
+
+    result = run_check(path)
+    response = json.loads(result.output)
+    if issue:
+        assert result.exit_code == 1
+        assert issue in response["issues"] + [v for entry in response["items"] for v in entry["issues"]]
+    else:
+        assert result.exit_code == 0
+        assert response["items"][0]["match_counts"] == {"before": 1, "after": 1, "reopened": 1}
+
+
+def test_remove_requires_absence_on_reopen(evidence):
+    path, manifest = evidence
+    artifacts = path.parent / "artifacts"
+    item = manifest["items"][0]
+    item["action"] = "remove"
+    item["reopened_screen"]["visible"] = False
+    write_read(artifacts / "before.json", [DRAWING])
+    for stage in ("after", "reopened"):
+        write_read(artifacts / f"{stage}.json", [])
+    write_json(path, manifest)
+    assert run_check(path).exit_code == 0
+
+    write_read(artifacts / "reopened.json", [DRAWING])
+    result = run_check(path)
+    assert result.exit_code == 1
+    assert "reads.reopened.expected_0_found_1" in result.output
+
+
 @pytest.mark.parametrize(("kind", "length"), [("rectangle", 2), ("horizontal", 1)])
 def test_price_zone_kinds_and_exact_json_decimal_anchors(evidence, kind, length):
     path, manifest = evidence

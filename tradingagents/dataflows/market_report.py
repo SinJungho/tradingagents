@@ -25,8 +25,13 @@ FUTURES = {'ES=F': 'S&P 500 선물', 'NQ=F': 'Nasdaq 100 선물', 'YM=F': 'Dow �
 # Yahoo returns only the newest N articles, so a late run can push the whole report window out.
 NEWS_FETCH_LIMIT = 50
 COMPANIES = ('AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'TSLA')
-MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS5': '5년 국채금리', 'DGS10': '10년 국채금리', 'DFII10': '10년 실질금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
-TREASURY_RATES = frozenset({'DGS2', 'DGS5', 'DGS10', 'DFII10', 'T10Y2Y'})
+MACRO = {'FEDFUNDS': '정책금리(실효 연방기금 월평균)', 'DGS2': '2년 국채금리', 'DGS5': '5년 국채금리', 'DGS10': '10년 국채금리', 'DFII5': '5년 실질금리', 'DFII10': '10년 실질금리', 'T10Y2Y': '10년–2년 금리차', 'CPIAUCSL': '소비자물가 수준', 'PCEPILFE': '근원 PCE 물가 수준', 'UNRATE': '실업률', 'PAYEMS': '비농업 고용 수준', 'GDPC1': '실질 GDP 수준', 'DTWEXBGS': '무역가중 미 달러 지수(광의, 명목)'}
+REAL_TREASURY_RATES = ('DFII5', 'DFII10')
+RATE_CHANGE_SERIES = frozenset(('DGS10', *REAL_TREASURY_RATES))
+TREASURY_RATES = RATE_CHANGE_SERIES | {'DGS2', 'DGS5', 'T10Y2Y'}
+CREDIT_SPREADS = {'BAMLH0A0HYM2': '미국 하이일드 회사채 OAS', 'BAMLC0A0CM': '미국 투자등급 회사채 OAS'}
+CBOE_VIX_HISTORY_URL = 'https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv'
+CBOE_VIX3M_HISTORY_URL = 'https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX3M_History.csv'
 ALFRED_CSV_URL = 'https://alfred.stlouisfed.org/graph/alfredgraph.csv'
 BITSTAMP_OHLC_URL = 'https://www.bitstamp.net/api/v2/ohlc/{pair}/'
 BEA_RELEASES_URL = 'https://apps.bea.gov/API/signup/release_dates.json'
@@ -176,10 +181,60 @@ class PublicMarketData:
             data = {'value': float(points[0]['value']), 'period': points[0]['date'],
                     'unit': meta[0].get('units', '미확인'),
                     'frequency': meta[0].get('frequency', '미확인'), 'vintage': vintage}
-            if series == 'DGS10' and len(points) > 1:
+            if series in RATE_CHANGE_SERIES and len(points) > 1:
                 data.update(previous=finite(points[1]['value']), previous_period=points[1]['date'])
+            if series in CREDIT_SPREADS:
+                data['observations'] = {
+                    point['date']: value for point in points if (value := finite(point['value'])) is not None
+                }
             return data
         return self._once(('macro', series, day), fetch)
+
+    def volatility_term_structure(self, as_of, *, include_as_of):
+        """Read Cboe's daily VIX/VIX3M histories and return a matched close ratio."""
+        as_of = pd.Timestamp(as_of).date()
+
+        def history(url, key):
+            def fetch():
+                response = get_with_retry(url, timeout=15, provider='Cboe')
+                reader = csv.DictReader(StringIO(response.text))
+                if reader.fieldnames != ['DATE', 'OPEN', 'HIGH', 'LOW', 'CLOSE']:
+                    raise ValueError('Unexpected Cboe daily history columns')
+                values = {}
+                for row in reader:
+                    observed = datetime.strptime(row['DATE'], '%m/%d/%Y').date()
+                    close = finite(row['CLOSE'])
+                    if close is None or close <= 0 or observed in values:
+                        raise ValueError('Invalid or duplicate Cboe daily close')
+                    values[observed] = close
+                if not values:
+                    raise ValueError('Empty Cboe daily history')
+                return values
+            return self._once(('cboe_history', key), fetch)
+
+        vix = history(CBOE_VIX_HISTORY_URL, 'VIX')
+        vix3m = history(CBOE_VIX3M_HISTORY_URL, 'VIX3M')
+        latest_allowed = as_of if include_as_of else as_of - timedelta(days=1)
+        common_dates = sorted((vix.keys() & vix3m.keys()), reverse=True)
+        eligible = [observed for observed in common_dates if observed <= latest_allowed]
+        if len(eligible) < 2:
+            raise ValueError('Matched Cboe closes are unavailable for the requested cutoff')
+        observed, previous = eligible[:2]
+        ratio = vix[observed] / vix3m[observed]
+        previous_ratio = vix[previous] / vix3m[previous]
+        return {
+            'period': observed.isoformat(),
+            'vix': vix[observed],
+            'vix3m': vix3m[observed],
+            'ratio': ratio,
+            'previous_period': previous.isoformat(),
+            'previous_ratio': previous_ratio,
+            'transition': ('back_below_one' if ratio <= 1 and previous_ratio > 1 else
+                           'inverted_today' if ratio > 1 and previous_ratio <= 1 else
+                           'inverted' if ratio > 1 else 'below_one'),
+            'source_1m': CBOE_VIX_HISTORY_URL,
+            'source_3m': CBOE_VIX3M_HISTORY_URL,
+        }
 
     def treasury_vintage(self, series, day):
         """Public ALFRED download fallback for government Treasury series only."""
@@ -207,7 +262,7 @@ class PublicMarketData:
             periods = sorted(points, reverse=True)
             data = {'value': points[periods[0]], 'period': periods[0], 'unit': 'Percent',
                     'frequency': 'Daily', 'vintage': vintage, 'source_api': ALFRED_CSV_URL}
-            if series == 'DGS10' and len(periods) > 1:
+            if series in RATE_CHANGE_SERIES and len(periods) > 1:
                 data.update(previous=points[periods[1]], previous_period=periods[1])
             return data
         return self._once(('treasury_vintage', series, day), fetch)

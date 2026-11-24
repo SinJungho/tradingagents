@@ -73,13 +73,15 @@ def investigate(provider, day, cutoff='20:00', *, index_return=0.5, vix_change=0
     return {row['key']: row for row in output}, evidence
 
 
-def test_quiet_day_does_not_fetch_weekly_or_credit_and_keeps_derivatives_gaps():
+def test_quiet_day_checks_daily_credit_but_skips_weekly_and_conditional_research():
     provider = Provider()
     investigations, evidence = investigate(provider, '2026-11-12', vix_change=None)
 
-    for key in ('credit', 'weekly_flows', 'release_reaction', 'rates', 'equity_drivers', 'financial_stress'):
+    for key in ('weekly_flows', 'release_reaction', 'rates', 'equity_drivers', 'financial_stress'):
         assert investigations[key]['status'] == 'not_run'
-    assert not provider.macro_calls
+        assert not investigations[key]['required']
+    assert investigations['credit']['required']
+    assert provider.macro_calls == ['BAMLH0A0HYM2', 'BAMLC0A0CM']
     assert investigations['threshold_coverage']['status'] == 'unavailable'
     assert '^VIX' in investigations['threshold_coverage']['reason']
 
@@ -145,7 +147,9 @@ def test_thresholds_and_provider_failure_open_only_matching_investigations():
     assert investigations['weekly_flows']['status'] == 'not_run'
     assert all(row['value'] is None for row in evidence if ' OAS' in row.get('label', ''))
     flows = next(row for row in evidence if row.get('label', '').startswith('CTA·'))
-    assert '당일 매도 주체' in flows['note'] and flows['status'] == 'unavailable'
+    assert '당일 매도 주체' in flows['note'] and flows['status'] == 'not_run'
+    assert investigations['equity_drivers']['required']
+    assert next(row for row in evidence if row['label'] == 'Goldman Panic')['status'] == 'not_run'
 
 
 def test_cftc_publication_cutoff_uses_previous_observation_before_friday_release(monkeypatch):

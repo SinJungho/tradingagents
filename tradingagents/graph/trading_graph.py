@@ -56,12 +56,12 @@ _NOT_IN_SIGNATURE = frozenset({
 
 def load_market_research(trade_date: str, now: datetime) -> dict:
     """Keep an unexpected acquisition failure from aborting the equity run."""
-    from tradingagents.market_report import collect_market_research
+    from tradingagents.market_report import collect_market_research, scenario_market_coverage
 
     try:
         return collect_market_research(trade_date, now=now)
     except Exception as exc:
-        return {
+        research = {
             "window": {"analysis_date": trade_date, "cutoff": None, "generated_at": now.isoformat()},
             "evidence": [],
             "investigations": [{
@@ -72,6 +72,8 @@ def load_market_research(trade_date: str, now: datetime) -> dict:
                 "evidence_ids": [],
             }],
         }
+        research["coverage"] = scenario_market_coverage(research["evidence"], research["investigations"])
+        return research
 
 
 class TradingAgentsGraph:

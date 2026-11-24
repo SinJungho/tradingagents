@@ -47,6 +47,8 @@ tradingagents market-report --output-dir results/market-reports            # LLM
 
 [공통 시황 조사 기준](../references/us-market-research.md)의 기준 시각, 출처, 조사 시작 조건을 따른다. 평시는 자동 수집 결과를 사용한다. 급변·중요 근거 충돌·사용자 심층 요청은 공통 참조의 분담과 검증 절차를 적용한다. 미실행과 확인 실패를 각각 표시한다.
 
+시장 스트레스 보강 근거로 Cboe VIX/VIX3M 공통 종가 비율과 FRED의 ICE BofA HY OAS를 확인한다. BofA 현금 비중·Bull & Bear와 Goldman Panic은 공개 기사에서 기관의 수치를 직접 인용한 경우에만 매체·URL·게시 시각·기준일을 붙여 2차 자료로 싣는다. CNN Fear & Greed는 CNN 원문을 확인한 보조 지표로 표시한다. Zweig Breadth Thrust는 정확한 NYSE 상승·하락 원자료를 확보하지 못하면 대용 계산하지 않고 미확인으로 남긴다.
+
 ## 4. 보고 형식
 
 1. 미국장 판단, 핵심 근거 2~3개와 근거 ID, 판단이 바뀌는 조건

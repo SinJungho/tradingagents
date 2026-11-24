@@ -311,6 +311,20 @@ def test_scenario_llm_gets_no_tools_and_retains_evidence_without_unsupported_fie
     assert not hasattr(case, "target_price")
 
 
+@pytest.mark.parametrize(("coverage", "expected"), [({}, "partial"), ({"status": "complete"}, "complete")])
+def test_market_coverage_caps_successful_synthesis_status(monkeypatch, coverage, expected):
+    research = {"window": {}, "evidence": [], "investigations": [], "coverage": coverage}
+    workflow = PortfolioScenarioWorkflow(
+        lambda _item: "Synthetic evidence.", MockScenarioLLM(_response()), get_market_research=lambda: research,
+    )
+    monkeypatch.setattr("tradingagents.portfolio.scenarios._portfolio_analysis_projection",
+                        lambda *_args, **_kwargs: ({}, "complete"))
+    report = workflow.invoke(Holdings((_holding("SYNTH"),), NOW))
+    assert report.status == expected
+    assert report.market_research is research
+    assert len(report.horizons) == 3
+
+
 def test_invalid_horizon_config_is_rejected():
     with pytest.raises(ValueError, match="horizon bounds"):
         HorizonSpec("short", 20, 1, "trading_days")
@@ -523,6 +537,7 @@ def test_synthesis_retries_once_after_invalid_response_without_echoing_it():
     retry_messages = llm.calls[1]
     assert retry_messages[:-1] == llm.calls[0]
     assert "형식 검증에 실패" in retry_messages[-1].content
+    assert "response.json_syntax" in retry_messages[-1].content
     assert first_response not in "\n".join(message.content for message in retry_messages)
 
 
@@ -531,6 +546,9 @@ def test_synthesis_retries_once_after_invalid_response_without_echoing_it():
     [
         ("investment_rationale", None),
         ("evidence", "not a string list"),
+        ("portfolio_impact", None),
+        ("portfolio_impact", ["synthetic impact with the wrong type"]),
+        ("portfolio_impact", "\x07"),
     ],
 )
 def test_synthesis_retries_missing_or_wrong_typed_case_fields(field, invalid_value):
@@ -552,6 +570,8 @@ def test_synthesis_retries_missing_or_wrong_typed_case_fields(field, invalid_val
     assert report.summary == "Scenarios are conditional on the supplied evidence."
     assert len(llm.calls) == 2
     assert research_calls == ["SYNTH"]
+    check = "string_list" if field == "evidence" else "required_text"
+    assert f"case.{field}.{check}" in llm.calls[1][-1].content
     assert invalid_response not in "\n".join(message.content for message in llm.calls[1])
 
 
@@ -586,3 +606,7 @@ def test_synthesis_valid_first_response_does_not_retry():
 
     assert report.summary == "Scenarios are conditional on the supplied evidence."
     assert len(llm.calls) == 1
+    prompt = llm.calls[0][0].content
+    assert '"portfolio_impact":"conditional effect on the supplied portfolio"' in prompt
+    assert "Always include portfolio_impact in every case" in prompt
+    assert "If impact cannot be quantified, write a qualitative sentence" in prompt
